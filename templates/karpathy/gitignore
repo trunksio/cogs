@@ -1,0 +1,4 @@
+# cogs graph cache — regenerable, never commit
+.cogs/
+
+.DS_Store

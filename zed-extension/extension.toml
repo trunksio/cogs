@@ -9,3 +9,13 @@ repository = "https://github.com/trunksio/cogs"
 [language_servers.cogs]
 name = "Cogs LSP"
 languages = ["Markdown"]
+
+[context_servers.cogs]
+
+[slash_commands.cogs-init]
+description = "Scaffold this project as a Karpathy-style cogs wiki (the agent writes the files)"
+requires_argument = false
+
+[slash_commands.cogs-graph]
+description = "Show how to open the cogs knowledge-graph visualization"
+requires_argument = false

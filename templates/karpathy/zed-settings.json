@@ -1,0 +1,15 @@
+{
+  // cogs wiring for Zed. Requires the cogs extension (or set
+  // lsp.cogs.binary.path to an absolute path if `cogs` isn't on PATH).
+  "context_servers": {
+    "cogs": {
+      "command": "cogs",
+      "args": ["mcp"]
+    }
+  },
+  "languages": {
+    "Markdown": {
+      "language_servers": ["cogs", "..."]
+    }
+  }
+}
