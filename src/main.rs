@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+mod init_templates;
 mod mcp;
 mod viz_window;
 
@@ -30,8 +31,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Write a commented default cogs.toml in the current directory
-    Init,
+    /// Initialise a vault in the current directory
+    Init {
+        /// Scaffold a full Karpathy-style three-layer wiki (raw/ + wiki/ +
+        /// AGENTS.md operating manual) instead of just a config file
+        #[arg(long)]
+        karpathy: bool,
+    },
     /// Index the vault into the graph database
     Sync {
         /// Wipe the database and reprocess every file
@@ -80,7 +86,7 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match &cli.command {
-        Command::Init => init(),
+        Command::Init { karpathy } => init(*karpathy),
         Command::Sync { full, with_embeddings } => sync(&cli, *full, *with_embeddings),
         Command::Status => status(&cli),
         Command::Query { cypher } => query(&cli, cypher),
@@ -134,14 +140,78 @@ fn open_vault(cli: &Cli) -> Result<Vault> {
     Ok(vault)
 }
 
-fn init() -> Result<()> {
-    let path = std::env::current_dir()?.join("cogs.toml");
-    if path.exists() {
-        bail!("{} already exists", path.display());
+fn init(karpathy: bool) -> Result<()> {
+    let root = std::env::current_dir()?;
+    let config_path = root.join("cogs.toml");
+    if config_path.exists() {
+        bail!("{} already exists", config_path.display());
     }
-    std::fs::write(&path, DEFAULT_CONFIG_TEMPLATE)?;
-    println!("wrote {}", path.display());
-    println!("add `.cogs/` to your .gitignore — it holds the regenerable graph cache");
+    if !karpathy {
+        std::fs::write(&config_path, DEFAULT_CONFIG_TEMPLATE)?;
+        println!("wrote {}", config_path.display());
+        println!("add `.cogs/` to your .gitignore — it holds the regenerable graph cache");
+        println!("(for a full three-layer wiki scaffold, use `cogs init --karpathy`)");
+        return Ok(());
+    }
+
+    use init_templates::*;
+    // Refuse to scaffold over an existing wiki structure.
+    for existing in ["wiki", "raw", "AGENTS.md"] {
+        if root.join(existing).exists() {
+            bail!("{existing} already exists here — refusing to scaffold over it");
+        }
+    }
+    let files: &[(&str, &str)] = &[
+        ("cogs.toml", KARPATHY_COGS_TOML),
+        ("AGENTS.md", KARPATHY_AGENTS_MD),
+        ("raw/README.md", KARPATHY_RAW_README),
+        ("wiki/index.md", KARPATHY_WIKI_INDEX),
+        ("wiki/log.md", KARPATHY_WIKI_LOG),
+        (".zed/settings.json", KARPATHY_ZED_SETTINGS),
+    ];
+    for (rel, content) in files {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, content)?;
+        println!("wrote {rel}");
+    }
+    for dir in [
+        "wiki/concepts",
+        "wiki/entities",
+        "wiki/positions",
+        "wiki/questions",
+        "wiki/sources",
+        "wiki/_lint",
+        "raw/clips",
+        "raw/research",
+        "raw/files",
+    ] {
+        std::fs::create_dir_all(root.join(dir))?;
+        std::fs::write(root.join(dir).join(".gitkeep"), "")?;
+        println!("created {dir}/");
+    }
+    // Append to an existing .gitignore rather than clobbering it.
+    let gitignore = root.join(".gitignore");
+    if gitignore.exists() {
+        let current = std::fs::read_to_string(&gitignore)?;
+        if !current.contains(".cogs/") {
+            std::fs::write(&gitignore, format!("{current}\n{}", KARPATHY_GITIGNORE))?;
+            println!("appended .cogs/ to .gitignore");
+        }
+    } else {
+        std::fs::write(&gitignore, KARPATHY_GITIGNORE)?;
+        println!("wrote .gitignore");
+    }
+
+    println!();
+    println!("Vault scaffolded. Next steps:");
+    println!("  1. git init && git add -A && git commit  (if not already a repo)");
+    println!("  2. cogs sync                              (build the graph)");
+    println!("  3. open in Zed — the cogs extension picks up cogs.toml automatically");
+    println!("  4. read AGENTS.md — it's the operating manual your AI agents follow");
+    println!("  5. optional: enable [embeddings] in cogs.toml for semantic search");
     Ok(())
 }
 

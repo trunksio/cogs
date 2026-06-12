@@ -36,6 +36,43 @@ With the Zed extension installed and a vault open:
    agent `search`, `semantic_search`, `get_note`, `neighbours`, `lineage`,
    `similar_notes`, and `health_report` over your vault.
 
+## Starting a new vault
+
+```sh
+mkdir my-wiki && cd my-wiki
+cogs init --karpathy
+```
+
+scaffolds the full three-layer system:
+
+```
+my-wiki/
+├── cogs.toml          # kinds, typed edges, diagnostics, embeddings
+├── AGENTS.md          # operating manual for AI agents: ingest/lint/answer
+│                      # workflows + the MCP/CLI/LSP tool inventory
+├── raw/               # immutable source layer (clips/, research/, files/)
+│   └── README.md      # capture conventions
+├── wiki/              # LLM-maintained synthesis
+│   ├── concepts/ entities/ positions/ questions/ sources/ _lint/
+│   ├── index.md       # master catalogue (excluded from the graph)
+│   └── log.md         # append-only audit trail
+├── .zed/settings.json # cogs LSP + MCP pre-wired
+└── .gitignore         # .cogs/ excluded
+```
+
+`AGENTS.md` is the contract: any agent (Claude Code, Zed's agent panel, …)
+that reads the repo learns the ingest workflow (capture to `raw/` → source
+page → weave into concept pages → log), the note frontmatter schema, the
+non-negotiables (raw is immutable, claims trace to sources, contradictions
+are surfaced not merged), and exactly which cogs tools it has. The MCP
+server's self-description is generated from `cogs.toml` too, so agents that
+connect over MCP get matching guidance even without reading AGENTS.md.
+
+Already have an Obsidian-style vault? Plain `cogs init` writes just a
+commented `cogs.toml` — or skip init entirely and cogs runs with zero-config
+defaults (every `*.md` a note, wikilinks → `LINKS_TO`, tags from frontmatter
+and inline `#tags`).
+
 ## How it works
 
 - **Zero-config**: point it at any Obsidian-style vault — every `*.md` is a
