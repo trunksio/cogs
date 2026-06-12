@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build web app
+        run: cd web && npm ci && npm run build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            zed-extension
+      - name: Tests
+        run: cargo test --workspace --no-default-features
+      - name: Extension compiles to wasm
+        run: cd zed-extension && cargo build --target wasm32-wasip2

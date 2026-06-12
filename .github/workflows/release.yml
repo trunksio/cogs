@@ -1,0 +1,63 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            features: ""
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            features: ""
+          # Linux builds exclude the native viz window (wry would link
+          # WebKitGTK dynamically and break the binary on machines without
+          # it). `cogs serve` + a browser covers the viz there.
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            features: "--no-default-features"
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            features: "--no-default-features"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build web app
+        run: cd web && npm ci && npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release ${{ matrix.features }}
+
+      - name: Package
+        # Asset name must match what zed-extension/src/lib.rs constructs:
+        # cogs-<tag>-<target>.tar.gz
+        run: |
+          ASSET="cogs-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+          tar -czf "$ASSET" -C target/release cogs
+          shasum -a 256 "$ASSET" > "$ASSET.sha256"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            cogs-*.tar.gz
+            cogs-*.sha256

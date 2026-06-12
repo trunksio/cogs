@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 mod init_templates;
 mod mcp;
+#[cfg(feature = "viz-window")]
 mod viz_window;
 
 use anyhow::{bail, Context, Result};
@@ -113,6 +114,7 @@ fn main() -> Result<()> {
                 .build()?
                 .block_on(cogs_server::serve(vault, port))
         }
+        #[cfg(feature = "viz-window")]
         Command::Viz { toggle, quit, port } => {
             let vault = open_vault(&cli)?;
             let port = port.unwrap_or(vault.config.server.port);
@@ -124,6 +126,13 @@ fn main() -> Result<()> {
                 viz_window::Verb::Show
             };
             viz_window::run(vault, port, verb)
+        }
+        #[cfg(not(feature = "viz-window"))]
+        Command::Viz { .. } => {
+            bail!(
+                "this build has no native viz window — run `cogs serve` and open \
+                 http://127.0.0.1:7117 in a browser instead"
+            );
         }
     }
 }
