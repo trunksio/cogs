@@ -1,0 +1,22 @@
+[package]
+name = "cogs-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ladybug graph layer: generated DDL, sync engine, queries, FTS/vector index lifecycle"
+
+[dependencies]
+cogs-core = { path = "../cogs-core" }
+lbug = "0.17"
+time = "0.3"
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "rustls", "json"] }
+
+[dev-dependencies]
+tempfile = "3"

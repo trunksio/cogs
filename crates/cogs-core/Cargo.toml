@@ -1,0 +1,21 @@
+[package]
+name = "cogs-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Vault model: config, markdown/frontmatter parsing, link resolution, in-memory index"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+sha2.workspace = true
+chrono.workspace = true
+regex.workspace = true
+globset.workspace = true
+ignore.workspace = true
+pulldown-cmark.workspace = true
+tracing.workspace = true
+serde_yaml_ng = "0.10.0"

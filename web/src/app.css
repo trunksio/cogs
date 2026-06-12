@@ -1,0 +1,89 @@
+:root {
+  --bg: #14151b;
+  --panel: #1b1d26;
+  --panel-border: #2a2d3a;
+  --text: #c8cad4;
+  --text-dim: #7d8295;
+  --accent: #5b8ff9;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+button {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+button.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+input[type='search'],
+input[type='text'] {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+  outline: none;
+  width: 260px;
+}
+
+input[type='search']:focus {
+  border-color: var(--accent);
+}
+
+label.facet {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 2px 0;
+  cursor: pointer;
+  color: var(--text-dim);
+}
+
+label.facet:hover {
+  color: var(--text);
+}
+
+label.facet .count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--panel-border);
+  border-radius: 4px;
+}

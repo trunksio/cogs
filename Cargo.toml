@@ -1,0 +1,57 @@
+[workspace]
+members = ["crates/cogs-core", "crates/cogs-graph", "crates/cogs-runtime", "crates/cogs-lsp", "crates/cogs-server"]
+exclude = ["zed-extension"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/trunksio/cogs"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+globset = "0.4"
+ignore = "0.4"
+pulldown-cmark = "0.13"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[package]
+name = "cogs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Graph wiki engine: LSP, graph viz, and MCP for wikilinked markdown vaults"
+
+[[bin]]
+name = "cogs"
+path = "src/main.rs"
+
+[dependencies]
+cogs-core = { path = "crates/cogs-core" }
+cogs-graph = { path = "crates/cogs-graph" }
+cogs-lsp = { path = "crates/cogs-lsp" }
+cogs-server = { version = "0.1.0", path = "crates/cogs-server" }
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "macros"] }
+rmcp = { version = "1.7", features = ["server", "transport-io", "macros"] }
+serde = { workspace = true, features = ["derive"] }
+chrono.workspace = true
+wry = "0.55"
+tao = "0.35"
+
+# lbug's C++ build is slow in debug; keep deps optimized even in dev builds.
+[profile.dev.package."*"]
+opt-level = 1

@@ -1,0 +1,57 @@
+# cogs config reproducing aoa-knowledge's sync_graph.py schema.
+# Drop this in the vault root as cogs.toml (and gitignore .cogs/) to adopt.
+
+[vault]
+notes = ["wiki/**/*.md"]
+exclude = ["wiki/index.md", "wiki/log.md", "wiki/README.md", "wiki/_lint/**"]
+id_strip_prefix = "wiki/"
+
+[resources]
+paths = ["raw/**/*"]
+exclude = ["raw/README.md"]
+
+[kinds]
+values = ["concept", "entity", "position", "question", "source", "moc"]
+unknown = "warn"
+
+[[edges]]
+name = "CITES"
+source = "wikilinks"
+
+[[edges]]
+name = "SOURCE_OF"
+source = "frontmatter"
+field = "source_refs"
+target = "resource"
+
+[[edges]]
+name = "CONTRADICTS"
+source = "frontmatter"
+field = "contradicts"
+
+[[edges]]
+name = "SUPERSEDES"
+source = "frontmatter"
+field = "supersedes"
+
+[tags]
+field = "tags"
+inline = false
+
+[diagnostics]
+broken_link = "warn"
+ambiguous_link = "warn"
+required_fields = { source = ["source_refs"] }
+stale_after_days = 180
+
+[embeddings]
+enabled = true
+provider = "ollama"
+model = "nomic-embed-text"
+dim = 768
+endpoint = "http://localhost:11434"
+char_cap = 7000
+exclude_kinds = ["source", "moc"]
+
+[server]
+port = 7117

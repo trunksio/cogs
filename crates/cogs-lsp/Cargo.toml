@@ -1,0 +1,16 @@
+[package]
+name = "cogs-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Graph-powered LSP server for wikilinked markdown vaults"
+
+[dependencies]
+cogs-core = { path = "../cogs-core" }
+cogs-runtime = { path = "../cogs-runtime" }
+anyhow.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+tower-lsp-server = "0.23"
+tokio = { version = "1", features = ["full"] }
+dashmap = "6"

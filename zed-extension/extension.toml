@@ -1,0 +1,11 @@
+id = "cogs"
+name = "Cogs"
+description = "Graph wiki engine for markdown vaults: wikilink language server with backlinks, graph database, and knowledge-graph visualization"
+version = "0.1.0"
+schema_version = 1
+authors = ["Lewis Crawford <lewis@trunks.io>"]
+repository = "https://github.com/trunksio/cogs"
+
+[language_servers.cogs]
+name = "Cogs LSP"
+languages = ["Markdown"]

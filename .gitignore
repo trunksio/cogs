@@ -1,0 +1,7 @@
+.cogs/
+target/
+node_modules/
+web/dist/*
+!web/dist/.gitkeep
+nohup.out
+.DS_Store
