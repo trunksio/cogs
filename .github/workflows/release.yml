@@ -14,7 +14,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # macos-15+ required: macos-14's older ld errors on duplicate
+          # symbols from lbug's force-loaded static archives.
+          - os: macos-15
             target: aarch64-apple-darwin
             features: ""
           - os: macos-15-intel
