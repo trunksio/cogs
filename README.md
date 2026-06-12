@@ -92,33 +92,35 @@ and inline `#tags`).
 
 ## Zed setup
 
-1. Build: `just build` (or `cargo build --release` for an empty viz shell).
-2. In Zed: `zed: install dev extension` → select `zed-extension/`.
-   (Requires rustup with the `wasm32-wasip2` target.)
-3. Point the extension at the binary (until releases exist) in Zed settings:
+Install the extension (from the gallery once published; until then:
+`zed: install dev extension` → select `zed-extension/`, which needs rustup
+with the `wasm32-wasip2` target). The extension resolves the `cogs` binary
+automatically: explicit `lsp.cogs.binary.path` setting → `cogs` on PATH →
+**auto-download from GitHub Releases** for your platform. It registers:
+
+- the **language server** for Markdown (completion, backlinks, hover,
+  diagnostics, rename),
+- the **MCP context server** for the agent panel,
+- **`/cogs-init`** — scaffold the open project as a full three-layer wiki
+  (the agent writes the files), and **`/cogs-graph`**.
+
+Recommended settings (only needed if you run other Markdown language
+servers — Zed routes go-to-definition/references to the first in the list):
 
 ```jsonc
 {
-  "lsp": {
-    "cogs": {
-      "binary": { "path": "/path/to/cogs/target/release/cogs", "arguments": ["lsp"] }
-    }
-  },
   "languages": {
     "Markdown": { "language_servers": ["cogs", "..."] }
   }
 }
 ```
 
-Put `"cogs"` first: Zed routes go-to-definition/references to the first
-language server in the list.
-
-MCP for the agent panel (`.zed/settings.json` in the vault):
+For development, pin the binary instead of downloading:
 
 ```jsonc
 {
-  "context_servers": {
-    "cogs": { "command": "/path/to/cogs", "args": ["mcp"] }
+  "lsp": {
+    "cogs": { "binary": { "path": "/path/to/cogs/target/debug/cogs", "arguments": ["lsp"] } }
   }
 }
 ```
