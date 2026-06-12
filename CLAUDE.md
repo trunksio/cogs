@@ -45,6 +45,12 @@ stripping, index lifecycle quirks).
   hops embedding calls to a plain OS thread (see mcp.rs embed_query).
 - `time` is pinned to 0.3.41 in Cargo.lock: newer `time` breaks wry's `cookie`
   dependency (conflicting From impls). Don't blindly `cargo update -p time`.
+- Release builds for macOS arm64 need macos-15+ runners — macos-14's older ld
+  hard-errors on duplicate symbols from lbug's force-loaded static archives.
+- Linux release builds use --no-default-features (no wry viz window): wry
+  would dynamically link WebKitGTK and break the binary on headless machines.
+- Release asset names (cogs-<tag>-<target>.tar.gz) are load-bearing: the Zed
+  extension's downloader constructs them in zed-extension/src/lib.rs.
 - `cogs viz` (wry/tao window) must run on the main thread; show/hide control
   is a UDS at `<vault>/.cogs/runtime/viz.sock` (verbs: show/toggle/quit).
   Closing the window hides it; the instance keeps webview state.
