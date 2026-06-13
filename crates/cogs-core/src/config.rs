@@ -220,6 +220,13 @@ pub struct EmbeddingsSection {
     pub char_cap: u32,
     pub exclude_kinds: Vec<String>,
     pub embed_resources: bool,
+    /// Env var holding the bearer key for the embeddings endpoint (omlx/cloud).
+    /// Empty = none.
+    pub api_key_env: String,
+    /// Asymmetric retrieval instruction prepended to QUERY embeddings only
+    /// (documents are embedded bare). Qwen3-Embedding et al. gain 1-5% from
+    /// this. Empty = symmetric (query and document embedded identically).
+    pub query_instruction: String,
 }
 
 impl Default for EmbeddingsSection {
@@ -233,6 +240,8 @@ impl Default for EmbeddingsSection {
             char_cap: 7000,
             exclude_kinds: vec![],
             embed_resources: true,
+            api_key_env: String::new(),
+            query_instruction: String::new(),
         }
     }
 }

@@ -7,7 +7,14 @@ use cogs_core::config::EmbeddingsSection;
 
 pub trait EmbeddingProvider: Send + Sync {
     fn dim(&self) -> u32;
+    /// Embed a document (bare). Used when indexing note/resource bodies.
     fn embed(&self, text: &str) -> Result<Vec<f32>>;
+    /// Embed a search query. For asymmetric models (Qwen3-Embedding etc.) the
+    /// query carries a retrieval instruction the document side omits; the
+    /// default is symmetric (same as `embed`).
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed(text)
+    }
 }
 
 pub struct OllamaProvider {
@@ -62,15 +69,14 @@ pub struct OpenAiCompatEmbedProvider {
     model: String,
     api_key: Option<String>,
     char_cap: usize,
+    /// Retrieval instruction for query embeddings (asymmetric models); empty
+    /// means symmetric.
+    query_instruction: String,
     client: reqwest::blocking::Client,
 }
 
-impl EmbeddingProvider for OpenAiCompatEmbedProvider {
-    fn dim(&self) -> u32 {
-        0
-    }
-
-    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+impl OpenAiCompatEmbedProvider {
+    fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
         let snippet: String = if text.is_empty() {
             " ".into()
         } else {
@@ -94,6 +100,25 @@ impl EmbeddingProvider for OpenAiCompatEmbedProvider {
     }
 }
 
+impl EmbeddingProvider for OpenAiCompatEmbedProvider {
+    fn dim(&self) -> u32 {
+        0
+    }
+
+    fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed_text(text)
+    }
+
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        if self.query_instruction.is_empty() {
+            self.embed_text(text)
+        } else {
+            // Qwen3-Embedding query format.
+            self.embed_text(&format!("Instruct: {}\nQuery: {}", self.query_instruction, text))
+        }
+    }
+}
+
 /// Build a provider from config and probe it once: a misconfigured provider
 /// or dim mismatch fails fast instead of failing per-note inside the loop
 /// (port of sync_graph.py::_make_embed_fn).
@@ -109,6 +134,13 @@ pub fn make_provider(cfg: &EmbeddingsSection) -> Result<Box<dyn EmbeddingProvide
     };
     let base_url = if cfg.endpoint.is_empty() { default_base.to_string() } else { cfg.endpoint.clone() };
 
+    // Bearer key from the configured env var (omlx/cloud); falls back to
+    // OPENAI_API_KEY so existing setups keep working.
+    let key_from_env = || -> Option<String> {
+        let var = if cfg.api_key_env.is_empty() { "OPENAI_API_KEY" } else { cfg.api_key_env.as_str() };
+        std::env::var(var).ok().filter(|s| !s.is_empty())
+    };
+
     let provider: Box<dyn EmbeddingProvider> = match cfg.provider.as_str() {
         // Native Ollama API (/api/embeddings) — kept for existing vaults.
         "ollama" => Box::new(OllamaProvider {
@@ -122,10 +154,11 @@ pub fn make_provider(cfg: &EmbeddingsSection) -> Result<Box<dyn EmbeddingProvide
             base_url,
             model: cfg.model.clone(),
             api_key: Some(
-                std::env::var("OPENAI_API_KEY")
+                key_from_env()
                     .context("embeddings provider 'openai' requires OPENAI_API_KEY")?,
             ),
             char_cap: cfg.char_cap as usize,
+            query_instruction: cfg.query_instruction.clone(),
             client,
         }),
         // omlx and any other OpenAI-compatible local server (key optional).
@@ -140,8 +173,9 @@ pub fn make_provider(cfg: &EmbeddingsSection) -> Result<Box<dyn EmbeddingProvide
             Box::new(OpenAiCompatEmbedProvider {
                 base_url,
                 model: cfg.model.clone(),
-                api_key: std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.is_empty()),
+                api_key: key_from_env(),
                 char_cap: cfg.char_cap as usize,
+                query_instruction: cfg.query_instruction.clone(),
                 client,
             })
         }

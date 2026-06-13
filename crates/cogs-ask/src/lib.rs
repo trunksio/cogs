@@ -210,7 +210,7 @@ impl<'a> Asker<'a> {
 
         // Vector semantic search (skipped if embeddings disabled/unavailable).
         if let Some(embed) = self.embed {
-            if let Ok(vec) = embed.embed(subq) {
+            if let Ok(vec) = embed.embed_query(subq) {
                 if let Ok(hits) = self.db.vector_search("Note", &vec, k * 2) {
                     rrf_merge(&mut ranks, hits.iter().map(|(id, _)| id.as_str()));
                 }

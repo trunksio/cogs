@@ -45,14 +45,15 @@ required_fields = { source = ["source_refs"] }
 stale_after_days = 180
 
 [embeddings]
-# Set enabled = true once an embedding model is served on omlx, and point
-# `model`/`dim` at it. FTS search + `cogs ask` work without embeddings;
-# the semantic overlay and semantic_search need them.
-enabled = false
+enabled = true
 provider = "omlx"                        # omlx | openai | ollama
-model = "<your-omlx-embedding-model>"    # must match omlx /v1/models
-dim = 0                                  # set to the model's output dimension
-endpoint = "http://localhost:8000/v1"    # omlx OpenAI-compatible endpoint
+model = "Qwen3-Embedding-0.6B-8bit"      # omlx /v1/models id
+dim = 1024
+endpoint = "http://127.0.0.1:8000/v1"    # omlx OpenAI-compatible endpoint
+api_key_env = "OMLX_API_KEY"             # bearer key for omlx (kept out of the file)
+# Qwen3-Embedding is asymmetric: queries carry a retrieval instruction,
+# documents are embedded bare. ~1-5% retrieval gain.
+query_instruction = "Given a question, retrieve wiki notes that answer it"
 char_cap = 7000
 exclude_kinds = ["source", "moc"]
 

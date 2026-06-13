@@ -150,7 +150,7 @@ impl CogsMcp {
                             None,
                         )
                     })?;
-                provider.embed(text).map_err(internal)
+                provider.embed_query(text).map_err(internal)
             })
             .join()
             .map_err(|_| ErrorData::internal_error("embedding thread panicked", None))?
