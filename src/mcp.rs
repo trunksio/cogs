@@ -218,6 +218,12 @@ pub struct SimilarNotesParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct AskParams {
+    /// A question to answer using ONLY the wiki, with citations
+    question: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct ListNotesParams {
     /// Filter by kind (e.g. "concept")
     kind: Option<String>,
@@ -231,6 +237,35 @@ pub struct ListNotesParams {
 
 #[tool_router]
 impl CogsMcp {
+    #[tool(
+        description = "Answer a question using ONLY the wiki: multi-step retrieval \
+                       (full-text + semantic + graph expansion) and grounded synthesis with \
+                       citations. Abstains when the wiki is silent. Use this for 'what does the \
+                       wiki say about X' questions; use search/get_note for raw lookups."
+    )]
+    fn ask(&self, Parameters(p): Parameters<AskParams>) -> Result<String, ErrorData> {
+        let vault = &self.vault;
+        // The pipeline does blocking LLM/embeddings/DB work; rmcp runs tool
+        // handlers on a tokio worker, so run it on a plain OS thread.
+        let answer = std::thread::scope(|s| {
+            s.spawn(|| -> Result<cogs_ask::Answer, ErrorData> {
+                let chat = cogs_llm::make_provider(&vault.config.llm).map_err(internal)?;
+                let db = GraphDb::open_ro(vault).map_err(internal)?;
+                let embed = if vault.config.embeddings.enabled {
+                    cogs_graph::make_provider(&vault.config.embeddings).ok()
+                } else {
+                    None
+                };
+                cogs_ask::Asker::new(vault, &db, chat.as_ref(), embed.as_deref())
+                    .ask(&p.question)
+                    .map_err(internal)
+            })
+            .join()
+            .map_err(|_| ErrorData::internal_error("ask thread panicked", None))?
+        })?;
+        jtext(serde_json::to_value(&answer).map_err(internal)?)
+    }
+
     #[tool(description = "Full-text (BM25) search over note titles and bodies")]
     fn search(&self, Parameters(p): Parameters<SearchParams>) -> Result<String, ErrorData> {
         let k = p.k.unwrap_or(10).min(50);
@@ -477,9 +512,10 @@ impl ServerHandler for CogsMcp {
             "Read-only query interface over the cogs knowledge graph for the vault at {}.\n\
              Note ids look like 'dir-slug' (path with '{}' stripped, '/'→'-', no .md).\n\
              Note kinds: {kinds}. Edge types: {}.\n\
-             Workflow: `search` to locate notes; `get_note` for full content; \
-             `neighbours`/`lineage` to walk the graph; `list_notes` to enumerate; \
-             `health_report` for orphans/contradictions/stale pages.",
+             Workflow: `ask` for a grounded, cited answer to a question (multi-step \
+             retrieval + synthesis, abstains when the wiki is silent); `search` to locate \
+             notes; `get_note` for full content; `neighbours`/`lineage` to walk the graph; \
+             `list_notes` to enumerate; `health_report` for orphans/contradictions/stale pages.",
             self.vault.root.display(),
             cfg.vault.id_strip_prefix,
             self.edge_names().join(", "),

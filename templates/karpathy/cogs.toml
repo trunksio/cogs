@@ -49,16 +49,24 @@ required_fields = { source = ["source_refs"] }
 stale_after_days = 180
 
 [embeddings]
-# Flip to true once an embedding provider is available (Ollama by default:
-# `ollama pull nomic-embed-text`). Powers semantic search, the similarity
-# overlay in the graph, and similar_notes/semantic_search MCP tools.
+# Flip to true once an embedding model is served (omlx OpenAI-compatible
+# endpoint by default). Powers semantic search, the similarity overlay in the
+# graph, and similar_notes/semantic_search MCP tools. Match `dim` to the model.
 enabled = false
-provider = "ollama"
-model = "nomic-embed-text"
-dim = 768
-endpoint = "http://localhost:11434"
+provider = "omlx"                        # omlx | openai | ollama
+model = "<your-omlx-embedding-model>"    # must match omlx /v1/models
+dim = 0                                  # set to the model's output dimension
+endpoint = "http://localhost:8000/v1"
 char_cap = 7000
 exclude_kinds = ["source", "moc"]
+
+[llm]
+# Chat model for `cogs ask` and ingest. Local on Apple Silicon via omlx
+# (`omlx serve <model>`); also openai | anthropic (set the API key env var).
+provider = "omlx"
+model = "qwen3.6-35b"                    # must match the id omlx exposes at /v1/models
+base_url = "http://localhost:8000/v1"
+max_tokens = 2048
 
 [server]
 port = 7117

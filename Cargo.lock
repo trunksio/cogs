@@ -426,8 +426,10 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "cogs-ask",
  "cogs-core",
  "cogs-graph",
+ "cogs-llm",
  "cogs-lsp",
  "cogs-server",
  "rmcp",
@@ -438,6 +440,19 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wry",
+]
+
+[[package]]
+name = "cogs-ask"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cogs-core",
+ "cogs-graph",
+ "cogs-llm",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -474,6 +489,18 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "time",
+ "tracing",
+]
+
+[[package]]
+name = "cogs-llm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cogs-core",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

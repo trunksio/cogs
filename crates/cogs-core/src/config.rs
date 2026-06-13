@@ -23,6 +23,7 @@ pub struct VaultConfig {
     pub tags: TagsSection,
     pub diagnostics: DiagnosticsSection,
     pub embeddings: EmbeddingsSection,
+    pub llm: LlmSection,
     pub server: ServerSection,
 }
 
@@ -236,6 +237,38 @@ impl Default for EmbeddingsSection {
     }
 }
 
+/// Chat/completion LLM backend for `cogs ask` and ingest. Pluggable like the
+/// embedding provider: any OpenAI-compatible endpoint (omlx, Ollama, OpenAI,
+/// vLLM) plus a native Anthropic adapter. Not part of the schema hash —
+/// changing it never triggers a graph rebuild.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LlmSection {
+    /// omlx | ollama | openai | anthropic (anything else is treated as
+    /// openai-compatible against `base_url`).
+    pub provider: String,
+    pub model: String,
+    /// Base URL for OpenAI-compatible providers. Empty = provider default
+    /// (omlx :8000, ollama :11434, openai api.openai.com).
+    pub base_url: String,
+    /// Env var holding the API key (cloud providers). Empty = none needed.
+    pub api_key_env: String,
+    /// Per-request cap; keeps local models bounded.
+    pub max_tokens: u32,
+}
+
+impl Default for LlmSection {
+    fn default() -> Self {
+        Self {
+            provider: "omlx".into(),
+            model: "mlx-community/Qwen2.5-7B-Instruct-4bit".into(),
+            base_url: String::new(),
+            api_key_env: String::new(),
+            max_tokens: 2048,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ServerSection {
@@ -267,6 +300,7 @@ impl Default for VaultConfig {
             tags: TagsSection::default(),
             diagnostics: DiagnosticsSection::default(),
             embeddings: EmbeddingsSection::default(),
+            llm: LlmSection::default(),
             server: ServerSection::default(),
         }
     }
@@ -396,9 +430,14 @@ impl VaultConfig {
     }
 
     pub fn hash(&self) -> String {
-        // canonical JSON of the config + schema version; toml round-trip noise
-        // (key order) is absorbed by serde_json's stable struct field order.
-        let canonical = serde_json::to_string(self).expect("config serializes");
+        // Hash only schema-affecting config. Runtime-only sections (server
+        // port, llm backend) are reset to default first so changing them
+        // never triggers a graph-db rebuild. toml key-order noise is absorbed
+        // by serde_json's stable struct field order.
+        let mut schema_only = self.clone();
+        schema_only.server = ServerSection::default();
+        schema_only.llm = LlmSection::default();
+        let canonical = serde_json::to_string(&schema_only).expect("config serializes");
         let mut h = Sha256::new();
         h.update(SCHEMA_VERSION.to_le_bytes());
         h.update(canonical.as_bytes());

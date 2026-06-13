@@ -55,14 +55,17 @@ impl EmbeddingProvider for OllamaProvider {
     }
 }
 
-pub struct OpenAiProvider {
+/// OpenAI-compatible `/v1/embeddings` (OpenAI cloud, omlx, vLLM, LM Studio).
+/// `base_url` selects the server; an optional bearer key covers the cloud.
+pub struct OpenAiCompatEmbedProvider {
+    base_url: String,
     model: String,
-    api_key: String,
+    api_key: Option<String>,
     char_cap: usize,
     client: reqwest::blocking::Client,
 }
 
-impl EmbeddingProvider for OpenAiProvider {
+impl EmbeddingProvider for OpenAiCompatEmbedProvider {
     fn dim(&self) -> u32 {
         0
     }
@@ -73,17 +76,17 @@ impl EmbeddingProvider for OpenAiProvider {
         } else {
             text.chars().take(self.char_cap).collect()
         };
-        let resp: serde_json::Value = self
+        let mut req = self
             .client
-            .post("https://api.openai.com/v1/embeddings")
-            .bearer_auth(&self.api_key)
-            .json(&serde_json::json!({ "model": self.model, "input": snippet }))
-            .send()?
-            .error_for_status()?
-            .json()?;
+            .post(format!("{}/embeddings", self.base_url.trim_end_matches('/')))
+            .json(&serde_json::json!({ "model": self.model, "input": snippet }));
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp: serde_json::Value = req.send()?.error_for_status()?.json()?;
         let vec = resp["data"][0]["embedding"]
             .as_array()
-            .context("no embedding in openai response")?
+            .context("no embedding in openai-compatible response")?
             .iter()
             .filter_map(|v| v.as_f64().map(|f| f as f32))
             .collect();
@@ -98,21 +101,50 @@ pub fn make_provider(cfg: &EmbeddingsSection) -> Result<Box<dyn EmbeddingProvide
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()?;
+    // Resolve an OpenAI-compatible base URL per provider; `endpoint` overrides.
+    let default_base = match cfg.provider.as_str() {
+        "omlx" => "http://localhost:8000/v1",
+        "openai" => "https://api.openai.com/v1",
+        _ => "",
+    };
+    let base_url = if cfg.endpoint.is_empty() { default_base.to_string() } else { cfg.endpoint.clone() };
+
     let provider: Box<dyn EmbeddingProvider> = match cfg.provider.as_str() {
+        // Native Ollama API (/api/embeddings) — kept for existing vaults.
         "ollama" => Box::new(OllamaProvider {
             endpoint: cfg.endpoint.trim_end_matches('/').to_string(),
             model: cfg.model.clone(),
             char_cap: cfg.char_cap as usize,
             client,
         }),
-        "openai" => Box::new(OpenAiProvider {
+        // OpenAI cloud — requires a key.
+        "openai" => Box::new(OpenAiCompatEmbedProvider {
+            base_url,
             model: cfg.model.clone(),
-            api_key: std::env::var("OPENAI_API_KEY")
-                .context("embeddings provider 'openai' requires OPENAI_API_KEY")?,
+            api_key: Some(
+                std::env::var("OPENAI_API_KEY")
+                    .context("embeddings provider 'openai' requires OPENAI_API_KEY")?,
+            ),
             char_cap: cfg.char_cap as usize,
             client,
         }),
-        other => bail!("unknown embeddings provider {other:?} (expected ollama|openai)"),
+        // omlx and any other OpenAI-compatible local server (key optional).
+        _ => {
+            if base_url.is_empty() {
+                bail!(
+                    "embeddings provider {:?} needs [embeddings].endpoint \
+                     (an OpenAI-compatible /v1 base URL)",
+                    cfg.provider
+                );
+            }
+            Box::new(OpenAiCompatEmbedProvider {
+                base_url,
+                model: cfg.model.clone(),
+                api_key: std::env::var("OPENAI_API_KEY").ok().filter(|s| !s.is_empty()),
+                char_cap: cfg.char_cap as usize,
+                client,
+            })
+        }
     };
     let sample = provider
         .embed("cogs embedding startup probe")

@@ -52,6 +52,14 @@ enum Command {
     Status,
     /// Run a read-only Cypher query and print rows as JSON
     Query { cypher: String },
+    /// Answer a question using only the wiki, with citations
+    Ask {
+        /// The question to answer
+        question: String,
+        /// Emit the full answer (citations, contradictions) as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the LSP server on stdio (launched by editors)
     Lsp,
     /// Run the MCP server on stdio (for AI agents)
@@ -91,6 +99,7 @@ fn main() -> Result<()> {
         Command::Sync { full, with_embeddings } => sync(&cli, *full, *with_embeddings),
         Command::Status => status(&cli),
         Command::Query { cypher } => query(&cli, cypher),
+        Command::Ask { question, json } => ask(&cli, question, *json),
         Command::Lsp => {
             let vault_override = cli.vault.clone();
             tokio::runtime::Builder::new_multi_thread()
@@ -297,6 +306,44 @@ fn query(cli: &Cli, cypher: &str) -> Result<()> {
         .context("opening graph db read-only (run `cogs sync` first if it doesn't exist)")?;
     let rows = db.query_json(cypher)?;
     println!("{}", serde_json::to_string_pretty(&rows)?);
+    Ok(())
+}
+
+fn ask(cli: &Cli, question: &str, as_json: bool) -> Result<()> {
+    let vault = open_vault(cli)?;
+    let db = GraphDb::open_ro(&vault)
+        .context("opening graph db read-only (run `cogs sync` first if it doesn't exist)")?;
+    let chat = cogs_llm::make_provider(&vault.config.llm)
+        .context("building the LLM provider (check [llm] in cogs.toml)")?;
+    // Query embedder for semantic retrieval; optional — FTS still works without.
+    let embed = if vault.config.embeddings.enabled {
+        cogs_graph::make_provider(&vault.config.embeddings)
+            .map_err(|e| tracing::warn!("semantic retrieval disabled: {e:#}"))
+            .ok()
+    } else {
+        None
+    };
+    let asker = cogs_ask::Asker::new(&vault, &db, chat.as_ref(), embed.as_deref());
+    let answer = asker.ask(question)?;
+
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&answer)?);
+        return Ok(());
+    }
+    println!("{}\n", answer.text);
+    if !answer.contradictions.is_empty() {
+        println!("⚠ contradictions flagged:");
+        for c in &answer.contradictions {
+            println!("  [{}] ⇄ [{}]", c.source, c.target);
+        }
+        println!();
+    }
+    if !answer.citations.is_empty() {
+        println!("Sources ({} of {} notes considered):", answer.citations.len(), answer.notes_considered);
+        for c in &answer.citations {
+            println!("  [{}] {}", c.id, c.title);
+        }
+    }
     Ok(())
 }
 

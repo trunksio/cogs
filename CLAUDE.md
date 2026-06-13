@@ -40,9 +40,18 @@ stripping, index lifecycle quirks).
   (`ORDER BY id`, not `ORDER BY p.id`).
 - rmcp tools can't return `Json<serde_json::Value>` (outputSchema must be a
   typed object) — return JSON as `String` instead.
-- `reqwest::blocking` (embedding providers) deadlocks when created/driven on a
-  tokio worker thread — rmcp tool handlers run inside tokio, so the MCP server
-  hops embedding calls to a plain OS thread (see mcp.rs embed_query).
+- `reqwest::blocking` (embedding + LLM providers) deadlocks when created/driven
+  on a tokio worker thread — rmcp tool handlers run inside tokio, so the MCP
+  server hops embedding calls (embed_query) and the whole `ask` pipeline to a
+  plain OS thread (std::thread::scope). Same rule for any future blocking call
+  from an MCP tool or axum handler.
+- LLM backend is pluggable via [llm] (cogs-llm crate): omlx/ollama/openai are
+  OpenAI-compatible (base_url + /chat/completions), anthropic is its own
+  adapter. omlx requires a bearer key — set api_key_env in [llm] and export it.
+  [llm] and [server] are excluded from the config hash so changing them never
+  triggers a graph rebuild.
+- ChatProvider must stay object-safe (used as dyn): the JSON helper is a free
+  fn `complete_json(&dyn ChatProvider, ...)`, not a trait method.
 - `time` is pinned to 0.3.41 in Cargo.lock: newer `time` breaks wry's `cookie`
   dependency (conflicting From impls). Don't blindly `cargo update -p time`.
 - Release builds for macOS arm64 need macos-15+ runners — macos-14's older ld

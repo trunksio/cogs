@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/cogs-core", "crates/cogs-graph", "crates/cogs-runtime", "crates/cogs-lsp", "crates/cogs-server"]
+members = ["crates/cogs-core", "crates/cogs-graph", "crates/cogs-runtime", "crates/cogs-lsp", "crates/cogs-server", "crates/cogs-llm", "crates/cogs-ask"]
 exclude = ["zed-extension"]
 resolver = "2"
 
@@ -40,6 +40,8 @@ cogs-core = { path = "crates/cogs-core" }
 cogs-graph = { path = "crates/cogs-graph" }
 cogs-lsp = { path = "crates/cogs-lsp" }
 cogs-server = { version = "0.1.0", path = "crates/cogs-server" }
+cogs-llm = { path = "crates/cogs-llm" }
+cogs-ask = { path = "crates/cogs-ask" }
 anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
 tracing.workspace = true

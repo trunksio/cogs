@@ -45,13 +45,23 @@ required_fields = { source = ["source_refs"] }
 stale_after_days = 180
 
 [embeddings]
-enabled = true
-provider = "ollama"
-model = "nomic-embed-text"
-dim = 768
-endpoint = "http://localhost:11434"
+# Set enabled = true once an embedding model is served on omlx, and point
+# `model`/`dim` at it. FTS search + `cogs ask` work without embeddings;
+# the semantic overlay and semantic_search need them.
+enabled = false
+provider = "omlx"                        # omlx | openai | ollama
+model = "<your-omlx-embedding-model>"    # must match omlx /v1/models
+dim = 0                                  # set to the model's output dimension
+endpoint = "http://localhost:8000/v1"    # omlx OpenAI-compatible endpoint
 char_cap = 7000
 exclude_kinds = ["source", "moc"]
+
+[llm]
+provider = "omlx"                        # omlx | openai | anthropic | ollama
+model = "Qwen3.6-35B-A3B-UD-MLX-4bit"    # omlx /v1/models id
+base_url = "http://127.0.0.1:8000/v1"
+api_key_env = "OMLX_API_KEY"             # omlx requires a bearer key; keep it out of the file
+max_tokens = 2048
 
 [server]
 port = 7117

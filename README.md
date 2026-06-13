@@ -14,6 +14,7 @@ One binary, four roles:
 | `cogs sync` | Index the vault into `.cogs/graph.db` (incremental, content-hashed) |
 | `cogs lsp` | LSP over stdio: `[[link]]` completion, go-to-definition, backlinks, hover previews, broken-link diagnostics, rename-across-vault, symbols |
 | `cogs mcp` | Read-only MCP server: `search`, `get_note`, `neighbours`, `lineage`, `list_notes`, `health_report` |
+| `cogs ask` | Answer a question using **only** the wiki — multi-step retrieval + grounded synthesis with citations, abstains when the wiki is silent |
 | `cogs serve` | Graph visualization + JSON API at `http://127.0.0.1:7117` |
 | `cogs viz` | The same viz in a native window with show/hide toggle (`--toggle`, `--quit`) — bind it to a key in Zed |
 
@@ -72,6 +73,27 @@ Already have an Obsidian-style vault? Plain `cogs init` writes just a
 commented `cogs.toml` — or skip init entirely and cogs runs with zero-config
 defaults (every `*.md` a note, wikilinks → `LINKS_TO`, tags from frontmatter
 and inline `#tags`).
+
+## Asking questions (`cogs ask`)
+
+```sh
+cogs ask "how does AOA handle agent identity?"
+```
+
+Builds a comprehensive, cited answer from **only** what the wiki contains.
+A hybrid pipeline: an LLM decomposes the question; cogs retrieves with BM25 +
+vector search fused by RRF, then expands over the typed-edge graph for
+coverage beyond top-k; the LLM synthesizes with inline `[note-id]` citations;
+cogs validates every citation against the retrieved set (invented references
+are dropped), surfaces `CONTRADICTS` edges as explicit disputes, and abstains
+("the wiki is silent on X") rather than drawing on outside knowledge. Add
+`--json` for the structured answer (citations, contradictions). Also available
+as the `ask` MCP tool in the agent panel.
+
+The LLM backend is pluggable via `[llm]` in `cogs.toml`, mirroring the
+embedding provider: any OpenAI-compatible endpoint — **omlx** (Apple-Silicon
+MLX, the local default), Ollama, OpenAI — or Anthropic. Local-first works
+with zero data leaving the machine.
 
 ## How it works
 
