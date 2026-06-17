@@ -1,7 +1,7 @@
 use std::ops::Range;
 use std::sync::LazyLock;
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
@@ -125,6 +125,108 @@ pub fn scan_wikilinks(body: &str, body_offset: usize) -> Vec<Link> {
         .collect()
 }
 
+/// Normalize a markdown link target against the source note's vault-relative
+/// path, producing a resolver-ready target (the LinkResolver expects ids that
+/// have already had `id_strip_prefix` removed). External URLs, mailto:,
+/// pure anchors and non-`.md` targets return None — only local markdown
+/// concept links form graph edges. Examples (source `wiki/concepts/a.md`,
+/// strip prefix `wiki/`):
+///   `b.md`            -> `concepts/b`
+///   `../entities/x.md`-> `entities/x`
+///   `./b.md#sec`      -> `concepts/b`
+///   `https://x/y.md`  -> None
+pub fn normalize_md_target(
+    raw: &str,
+    source_rel_path: &str,
+    strip_prefix: &str,
+) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // Drop any fragment/query; OKF links point at whole concept files.
+    let path_part = raw.split(['#', '?']).next().unwrap_or(raw);
+    if path_part.is_empty() {
+        return None; // pure anchor like `#section`
+    }
+    // External or non-relative references never resolve to local notes.
+    if path_part.contains("://")
+        || path_part.starts_with("mailto:")
+        || path_part.starts_with("//")
+    {
+        return None;
+    }
+    if !path_part.ends_with(".md") {
+        return None;
+    }
+    // Resolve the relative path against the source note's directory.
+    let source_dir = source_rel_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    let mut segments: Vec<&str> = if path_part.starts_with('/') {
+        Vec::new() // absolute (vault-root) reference
+    } else if source_dir.is_empty() {
+        Vec::new()
+    } else {
+        source_dir.split('/').collect()
+    };
+    for seg in path_part.trim_start_matches('/').split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+    let joined = segments.join("/");
+    let stripped = joined.strip_prefix(strip_prefix).unwrap_or(&joined);
+    let no_ext = stripped.strip_suffix(".md").unwrap_or(stripped);
+    if no_ext.is_empty() {
+        None
+    } else {
+        Some(no_ext.to_string())
+    }
+}
+
+/// Scan standard markdown `[text](target.md)` links in `body`. Targets are
+/// normalized to resolver-ready ids relative to `source_rel_path`; links whose
+/// target is external or non-markdown are dropped. Spans are absolute file
+/// offsets. Masking mirrors `scan_wikilinks` (links inside code are flagged).
+pub fn scan_markdown_links(
+    body: &str,
+    body_offset: usize,
+    source_rel_path: &str,
+    strip_prefix: &str,
+) -> Vec<Link> {
+    let mask = code_mask_ranges(body);
+    let parser = Parser::new_ext(body, Options::empty()).into_offset_iter();
+    let mut out = Vec::new();
+    for (event, range) in parser {
+        if let Event::Start(Tag::Link { link_type, dest_url, title: _, id: _ }) = event {
+            // Autolinks/emails aren't concept references.
+            if matches!(link_type, LinkType::Email | LinkType::Autolink) {
+                continue;
+            }
+            let Some(target) = normalize_md_target(&dest_url, source_rel_path, strip_prefix)
+            else {
+                continue;
+            };
+            let span = body_offset + range.start..body_offset + range.end;
+            out.push(Link {
+                target,
+                anchor: dest_url
+                    .split_once('#')
+                    .map(|(_, a)| a.split(['?']).next().unwrap_or(a).to_string())
+                    .filter(|a| !a.is_empty()),
+                alias: None,
+                target_span: span.clone(),
+                span,
+                masked: in_ranges(range.start, &mask),
+            });
+        }
+    }
+    out
+}
+
 /// Replace `[[target|alias]]` with alias, `[[target]]`/`[[target#a]]` with the
 /// last path segment of the target. Byte-for-byte port of
 /// sync_graph.py::strip_wikilinks_for_fts so body hashes line up.
@@ -231,9 +333,16 @@ pub fn parse_note(rel_path: &str, text: &str, cfg: &VaultConfig) -> ParsedNote {
     let status = get(&fields.status).and_then(yaml_str);
     let created = get(&fields.created).and_then(|v| parse_date_lenient(v));
     let updated = get(&fields.updated).and_then(|v| parse_date_lenient(v));
+    // OKF queryable fields. Empty config name disables the mapping.
+    let lookup = |name: &str| (!name.is_empty()).then(|| get(name)).flatten();
+    let description = lookup(&fields.description).and_then(yaml_str);
+    let resource = lookup(&fields.resource).and_then(yaml_str);
+    let timestamp = lookup(&fields.timestamp).and_then(parse_date_lenient);
 
     let mut tags = yaml_str_list(get(&cfg.tags.field));
     let links = scan_wikilinks(body, body_offset);
+    let md_links =
+        scan_markdown_links(body, body_offset, rel_path, &cfg.vault.id_strip_prefix);
     if cfg.tags.inline {
         let mask = code_mask_ranges(body);
         for c in INLINE_TAG_RE.captures_iter(body) {
@@ -271,12 +380,16 @@ pub fn parse_note(rel_path: &str, text: &str, cfg: &VaultConfig) -> ParsedNote {
         status,
         created,
         updated,
+        description,
+        resource,
+        timestamp,
         tags,
         frontmatter_json,
         frontmatter_range: fm_range,
         body_text,
         body_hash,
         links,
+        md_links,
         edge_fields,
         headings: heading_outline(body, body_offset),
     }
@@ -434,6 +547,52 @@ mod tests {
         assert_eq!(n.edge_fields[0].value, "old-take");
         assert_eq!(n.headings.len(), 1);
         assert!(n.body_text.contains("Links to au-contract."));
+    }
+
+    #[test]
+    fn markdown_links_scanned_and_normalized() {
+        // OKF body links: relative markdown links normalize to resolver-ready
+        // ids (prefix stripped, .md dropped) against the source note's dir.
+        let body = "See [B](b.md) and [X](../entities/x.md) and [ext](https://e.com/y.md) and [anchor](#sec).";
+        let links = scan_markdown_links(body, 0, "wiki/concepts/a.md", "wiki/");
+        let targets: Vec<&str> = links.iter().map(|l| l.target.as_str()).collect();
+        assert_eq!(targets, vec!["concepts/b", "entities/x"]);
+        // The external URL and the pure anchor are dropped.
+    }
+
+    #[test]
+    fn markdown_link_edge_parses_in_note() {
+        let mut c = cfg();
+        c.notes.fields.kind = "type".into();
+        c.edges[0].source = crate::config::EdgeSource::MarkdownLinks;
+        let text = "---\ntype: concept\ndescription: A short summary\ntimestamp: 2026-06-01\n---\n# A\n\nLinks to [the contract](au-contract.md).\n";
+        let n = parse_note("concepts/agentic-unit.md", text, &c);
+        assert_eq!(n.kind.as_deref(), Some("concept"));
+        assert_eq!(n.description.as_deref(), Some("A short summary"));
+        assert_eq!(n.timestamp.unwrap().to_string(), "2026-06-01");
+        assert_eq!(n.md_links.len(), 1);
+        assert_eq!(n.md_links[0].target, "concepts/au-contract");
+        // Wikilinks are absent in an OKF-style note.
+        assert!(n.links.is_empty());
+    }
+
+    #[test]
+    fn normalize_md_target_rules() {
+        assert_eq!(
+            normalize_md_target("b.md", "wiki/concepts/a.md", "wiki/").as_deref(),
+            Some("concepts/b")
+        );
+        assert_eq!(
+            normalize_md_target("./b.md#frag", "concepts/a.md", "").as_deref(),
+            Some("concepts/b")
+        );
+        assert_eq!(
+            normalize_md_target("../x.md", "concepts/a.md", "").as_deref(),
+            Some("x")
+        );
+        assert_eq!(normalize_md_target("https://e.com/x.md", "a.md", ""), None);
+        assert_eq!(normalize_md_target("notes.txt", "a.md", ""), None);
+        assert_eq!(normalize_md_target("#section", "a.md", ""), None);
     }
 
     #[test]

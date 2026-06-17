@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 /// Schema version baked into the config hash: bump to force DB rebuilds when
 /// the generated DDL or sync semantics change incompatibly.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 pub const CONFIG_FILE_NAMES: &[&str] = &["cogs.toml", ".cogs/config.toml"];
 
@@ -106,6 +106,13 @@ impl Default for NotesSection {
 }
 
 /// Which frontmatter keys map onto the typed Note columns.
+///
+/// `kind` remaps the native COGS classifier (OKF profiles set this to
+/// `"type"`). `description`, `resource` and `timestamp` complete OKF v0.1's
+/// queryable field set (`type, title, description, resource, tags, timestamp`)
+/// so those values land on dedicated, queryable Note columns rather than only
+/// inside `frontmatter_json`. They default to OKF's own field names; an empty
+/// string disables the mapping for that column.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct NoteFields {
@@ -114,6 +121,9 @@ pub struct NoteFields {
     pub status: String,
     pub created: String,
     pub updated: String,
+    pub description: String,
+    pub resource: String,
+    pub timestamp: String,
 }
 
 impl Default for NoteFields {
@@ -124,6 +134,9 @@ impl Default for NoteFields {
             status: "status".into(),
             created: "created".into(),
             updated: "updated".into(),
+            description: "description".into(),
+            resource: "resource".into(),
+            timestamp: "timestamp".into(),
         }
     }
 }
@@ -159,10 +172,24 @@ pub struct EdgeConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum EdgeSource {
+    /// Native COGS body links: `[[target]]`.
     Wikilinks,
+    /// Standard markdown body links: `[text](target.md)` — the OKF graph
+    /// edge source. Mutually exclusive with `wikilinks` (a vault has at most
+    /// one body-link edge).
+    MarkdownLinks,
     Frontmatter,
+}
+
+impl EdgeSource {
+    /// True for sources derived from links in the note body (wikilinks or
+    /// markdown links), as opposed to frontmatter fields. A vault may declare
+    /// at most one body-link edge.
+    pub fn is_body_link(self) -> bool {
+        matches!(self, EdgeSource::Wikilinks | EdgeSource::MarkdownLinks)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -387,7 +414,7 @@ impl VaultConfig {
     pub fn validate(&self) -> Result<()> {
         let name_re = regex::Regex::new(r"^[A-Z][A-Z0-9_]{0,30}$").unwrap();
         let mut seen = std::collections::HashSet::new();
-        let mut wikilink_edges = 0;
+        let mut body_link_edges = 0;
         for e in &self.edges {
             if !name_re.is_match(&e.name) {
                 bail!("edge name {:?} must match ^[A-Z][A-Z0-9_]{{0,30}}$", e.name);
@@ -399,13 +426,16 @@ impl VaultConfig {
                 bail!("duplicate edge name {:?}", e.name);
             }
             match e.source {
-                EdgeSource::Wikilinks => {
-                    wikilink_edges += 1;
+                EdgeSource::Wikilinks | EdgeSource::MarkdownLinks => {
+                    body_link_edges += 1;
                     if e.field.is_some() {
-                        bail!("edge {:?}: 'field' is not valid with source=\"wikilinks\"", e.name);
+                        bail!(
+                            "edge {:?}: 'field' is not valid with a body-link source",
+                            e.name
+                        );
                     }
                     if e.target == EdgeTarget::Resource {
-                        bail!("edge {:?}: wikilink edges must target notes", e.name);
+                        bail!("edge {:?}: body-link edges must target notes", e.name);
                     }
                 }
                 EdgeSource::Frontmatter => {
@@ -415,8 +445,11 @@ impl VaultConfig {
                 }
             }
         }
-        if wikilink_edges > 1 {
-            bail!("at most one edge may have source=\"wikilinks\"");
+        if body_link_edges > 1 {
+            bail!(
+                "at most one body-link edge is allowed (source=\"wikilinks\" or \
+                 source=\"markdown_links\", not both)"
+            );
         }
         if self
             .edges
@@ -429,9 +462,11 @@ impl VaultConfig {
         Ok(())
     }
 
-    /// The edge derived from body wikilinks (CITES in aoa-knowledge, LINKS_TO by default).
-    pub fn wikilink_edge(&self) -> Option<&EdgeConfig> {
-        self.edges.iter().find(|e| e.source == EdgeSource::Wikilinks)
+    /// The single edge derived from body links — either `[[wikilinks]]`
+    /// (CITES in aoa-knowledge, LINKS_TO by default) or markdown `[](x.md)`
+    /// links (OKF profiles). At most one exists (enforced by `validate`).
+    pub fn body_link_edge(&self) -> Option<&EdgeConfig> {
+        self.edges.iter().find(|e| e.source.is_body_link())
     }
 
     pub fn frontmatter_edges(&self) -> impl Iterator<Item = &EdgeConfig> {
@@ -466,7 +501,7 @@ mod tests {
     #[test]
     fn default_has_linksto_wikilink_edge() {
         let cfg = VaultConfig::default();
-        assert_eq!(cfg.wikilink_edge().unwrap().name, "LINKS_TO");
+        assert_eq!(cfg.body_link_edge().unwrap().name, "LINKS_TO");
     }
 
     #[test]
@@ -506,7 +541,7 @@ mod tests {
         )
         .unwrap();
         cfg.validate().unwrap();
-        assert_eq!(cfg.wikilink_edge().unwrap().name, "CITES");
+        assert_eq!(cfg.body_link_edge().unwrap().name, "CITES");
         assert_eq!(cfg.frontmatter_edges().count(), 2);
         assert_eq!(cfg.vault.id_strip_prefix, "wiki/");
     }
@@ -528,6 +563,71 @@ mod tests {
             target: EdgeTarget::Note,
         });
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn markdown_links_edge_parses() {
+        let cfg: VaultConfig = toml::from_str(
+            r#"
+            [notes.fields]
+            kind = "type"
+
+            [kinds]
+            unknown = "allow"
+
+            [[edges]]
+            name = "LINKS_TO"
+            source = "markdown_links"
+            "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        let edge = cfg.body_link_edge().unwrap();
+        assert_eq!(edge.name, "LINKS_TO");
+        assert_eq!(edge.source, EdgeSource::MarkdownLinks);
+        assert!(edge.source.is_body_link());
+    }
+
+    #[test]
+    fn rejects_two_body_link_edges() {
+        // wikilinks + markdown_links together is rejected (one body-link max).
+        let mut cfg = VaultConfig::default();
+        cfg.edges.push(EdgeConfig {
+            name: "MD_LINKS".into(),
+            source: EdgeSource::MarkdownLinks,
+            field: None,
+            target: EdgeTarget::Note,
+        });
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_markdown_links_to_resource() {
+        let mut cfg = VaultConfig::default();
+        cfg.edges[0].source = EdgeSource::MarkdownLinks;
+        cfg.edges[0].target = EdgeTarget::Resource;
+        cfg.resources = Some(ResourcesSection::default());
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn okf_field_mapping_parses() {
+        // The OKF queryable field set maps onto typed Note columns.
+        let cfg: VaultConfig = toml::from_str(
+            r#"
+            [notes.fields]
+            kind = "type"
+            description = "description"
+            resource = "resource"
+            timestamp = "timestamp"
+            "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.notes.fields.kind, "type");
+        assert_eq!(cfg.notes.fields.description, "description");
+        assert_eq!(cfg.notes.fields.resource, "resource");
+        assert_eq!(cfg.notes.fields.timestamp, "timestamp");
     }
 
     #[test]

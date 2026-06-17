@@ -395,6 +395,7 @@ fn resolution_shifted(
     new: &LinkResolver,
 ) -> bool {
     let mut targets: Vec<&str> = note.links.iter().map(|l| l.target.as_str()).collect();
+    targets.extend(note.md_links.iter().map(|l| l.target.as_str()));
     targets.extend(note.edge_fields.iter().map(|e| e.value.as_str()));
     targets
         .iter()
@@ -470,6 +471,9 @@ impl SyncStmts {
                      p.status = $status,
                      p.created = $created,
                      p.updated = $updated,
+                     p.description = $description,
+                     p.resource = $resource,
+                     p.timestamp = $timestamp,
                      p.tags = $tags,
                      p.body_text = $body_text,
                      p.body_hash = $body_hash,
@@ -523,6 +527,9 @@ fn write_note_props(conn: &Connection, stmts: &mut SyncStmts, note: &ParsedNote)
             ("status", opt_string(note.status.clone())),
             ("created", opt_date(note.created)),
             ("updated", opt_date(note.updated)),
+            ("description", opt_string(note.description.clone())),
+            ("resource", opt_string(note.resource.clone())),
+            ("timestamp", opt_date(note.timestamp)),
             ("tags", tags),
             ("body_text", Value::String(note.body_text.clone())),
             ("body_hash", Value::String(note.body_hash.clone())),
@@ -605,12 +612,17 @@ fn write_note_edges(
         edges += 1;
     }
 
-    // Wikilink edge (CITES / LINKS_TO). Masked (in-code) links are included
-    // for parity with sync_graph.py; targets dedup at text level like the
-    // Python set-of-targets, self-links skipped.
-    if let Some(e) = vault.config.wikilink_edge() {
+    // Body-link edge (CITES / LINKS_TO): either `[[wikilinks]]` or markdown
+    // `[](x.md)` links depending on the configured source. Masked (in-code)
+    // links are included for parity with sync_graph.py; targets dedup at text
+    // level like the Python set-of-targets, self-links skipped.
+    if let Some(e) = vault.config.body_link_edge() {
+        let body_links = match e.source {
+            cogs_core::config::EdgeSource::MarkdownLinks => &note.md_links,
+            _ => &note.links,
+        };
         let mut seen: HashSet<&str> = HashSet::new();
-        for link in &note.links {
+        for link in body_links {
             if !seen.insert(link.target.as_str()) {
                 continue;
             }
