@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 mod init_templates;
 mod mcp;
+mod okf;
 #[cfg(feature = "viz-window")]
 mod viz_window;
 
@@ -38,6 +39,11 @@ enum Command {
         /// AGENTS.md operating manual) instead of just a config file
         #[arg(long)]
         karpathy: bool,
+        /// Scaffold an OKF (Open Knowledge Format) bundle: `type`-keyed
+        /// frontmatter, plain markdown links, index.md/log.md, and an
+        /// OKF-compatibility cogs.toml
+        #[arg(long, conflicts_with = "karpathy")]
+        okf: bool,
     },
     /// Index the vault into the graph database
     Sync {
@@ -60,6 +66,9 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// OKF (Open Knowledge Format) v0.1 interop: import, lint, export bundles
+    #[command(subcommand)]
+    Okf(OkfCommand),
     /// Run the LSP server on stdio (launched by editors)
     Lsp,
     /// Run the MCP server on stdio (for AI agents)
@@ -84,6 +93,25 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum OkfCommand {
+    /// Import an OKF bundle (directory, .tar.gz/.tgz tarball, or git URL) into a
+    /// graph db using the OKF-compatibility profile
+    Import {
+        /// Path to a directory/tarball, or a git URL
+        source: String,
+    },
+    /// Check the current vault for OKF v0.1 conformance
+    Lint,
+    /// Export the current vault as an OKF bundle (kind→type, [[wikilinks]]→
+    /// markdown links). Tars the output when --out ends in .tar.gz/.tgz
+    Export {
+        /// Output directory or tarball (default: ./okf-export)
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -95,11 +123,12 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match &cli.command {
-        Command::Init { karpathy } => init(*karpathy),
+        Command::Init { karpathy, okf } => init(*karpathy, *okf),
         Command::Sync { full, with_embeddings } => sync(&cli, *full, *with_embeddings),
         Command::Status => status(&cli),
         Command::Query { cypher } => query(&cli, cypher),
         Command::Ask { question, json } => ask(&cli, question, *json),
+        Command::Okf(cmd) => okf_dispatch(&cli, cmd),
         Command::Lsp => {
             let vault_override = cli.vault.clone();
             tokio::runtime::Builder::new_multi_thread()
@@ -158,17 +187,21 @@ fn open_vault(cli: &Cli) -> Result<Vault> {
     Ok(vault)
 }
 
-fn init(karpathy: bool) -> Result<()> {
+fn init(karpathy: bool, okf: bool) -> Result<()> {
     let root = std::env::current_dir()?;
     let config_path = root.join("cogs.toml");
     if config_path.exists() {
         bail!("{} already exists", config_path.display());
     }
+    if okf {
+        return init_okf(&root);
+    }
     if !karpathy {
         std::fs::write(&config_path, DEFAULT_CONFIG_TEMPLATE)?;
         println!("wrote {}", config_path.display());
         println!("add `.cogs/` to your .gitignore — it holds the regenerable graph cache");
-        println!("(for a full three-layer wiki scaffold, use `cogs init --karpathy`)");
+        println!("(for a full three-layer wiki scaffold, use `cogs init --karpathy`;");
+        println!(" for an OKF interchange bundle, use `cogs init --okf`)");
         return Ok(());
     }
 
@@ -230,6 +263,52 @@ fn init(karpathy: bool) -> Result<()> {
     println!("  3. open in Zed — the cogs extension picks up cogs.toml automatically");
     println!("  4. read AGENTS.md — it's the operating manual your AI agents follow");
     println!("  5. optional: enable [embeddings] in cogs.toml for semantic search");
+    Ok(())
+}
+
+/// Scaffold an OKF (Open Knowledge Format) bundle: `type`-keyed frontmatter,
+/// plain markdown links, reserved index.md/log.md, a spec-stub README, and the
+/// OKF-compatibility cogs.toml.
+fn init_okf(root: &std::path::Path) -> Result<()> {
+    use init_templates::*;
+    for existing in ["index.md", "log.md", "concepts"] {
+        if root.join(existing).exists() {
+            bail!("{existing} already exists here — refusing to scaffold over it");
+        }
+    }
+    let files: &[(&str, &str)] = &[
+        ("cogs.toml", OKF_COGS_TOML),
+        ("README.md", OKF_README),
+        ("index.md", OKF_INDEX),
+        ("log.md", OKF_LOG),
+        ("concepts/example.md", OKF_EXAMPLE),
+    ];
+    for (rel, content) in files {
+        let path = root.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, content)?;
+        println!("wrote {rel}");
+    }
+    let gitignore = root.join(".gitignore");
+    if gitignore.exists() {
+        let current = std::fs::read_to_string(&gitignore)?;
+        if !current.contains(".cogs/") {
+            std::fs::write(&gitignore, format!("{current}\n.cogs/\n"))?;
+            println!("appended .cogs/ to .gitignore");
+        }
+    } else {
+        std::fs::write(&gitignore, "# cogs graph cache — regenerable, never commit\n.cogs/\n")?;
+        println!("wrote .gitignore");
+    }
+    println!();
+    println!("OKF bundle scaffolded. Next steps:");
+    println!("  1. cogs sync                 (build the graph)");
+    println!("  2. cogs okf lint             (check OKF v0.1 conformance)");
+    println!("  3. cogs ask \"...\"            (query it, with citations)");
+    println!("  4. add concept files under any directory; link them with");
+    println!("     standard markdown links: [label](other/concept.md)");
     Ok(())
 }
 
@@ -345,6 +424,25 @@ fn ask(cli: &Cli, question: &str, as_json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn okf_dispatch(cli: &Cli, cmd: &OkfCommand) -> Result<()> {
+    match cmd {
+        OkfCommand::Import { source } => okf::import(source, cli.state_dir.as_deref()),
+        OkfCommand::Lint => {
+            let vault = open_vault(cli)?;
+            let conformant = okf::lint(&vault)?;
+            if !conformant {
+                bail!("OKF v0.1 conformance check failed");
+            }
+            Ok(())
+        }
+        OkfCommand::Export { out } => {
+            let vault = open_vault(cli)?;
+            let out = out.clone().unwrap_or_else(|| PathBuf::from("okf-export"));
+            okf::export(&vault, &out)
+        }
+    }
 }
 
 const DEFAULT_CONFIG_TEMPLATE: &str = r#"# cogs vault configuration
