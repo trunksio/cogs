@@ -8,6 +8,14 @@ browser-based knowledge-graph visualization that replaces Obsidian's graph
 view. First-class in [Zed](https://zed.dev) today; the engine is a standalone
 binary, so the terminal and any MCP-capable agent work too.
 
+It also speaks **[OKF](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing)**
+(Open Knowledge Format) v0.1 — Google Cloud's open interchange format for
+knowledge bases — both as a **consumer** (`cogs okf import`, `cogs okf lint`)
+and a **producer** (`cogs okf export`), so cogs's graph engine, `cogs ask`, the
+viz, and the `cogs mcp` agent tools all work on any OKF bundle (Google ships
+only a static HTML viewer), and any cogs vault can be emitted as a portable OKF
+bundle.
+
 One binary, several roles:
 
 | Command | Role |
@@ -18,8 +26,9 @@ One binary, several roles:
 | `cogs viz` | The same viz in a native window with a show/hide toggle (`--toggle`, `--quit`) — bind it to a key in Zed |
 | `cogs mcp` | MCP server for agents: `ask`, `search`, `semantic_search`, `get_note`, `neighbours`, `lineage`, `similar_notes`, `list_notes`, `health_report` |
 | `cogs sync` | Index the vault into `.cogs/graph.db` (incremental, content-hashed; `--with-embeddings`) |
+| `cogs okf` | OKF v0.1 interop: `import <dir\|tarball\|git-url>`, `lint` (conformance), `export [--out]` (emit a portable OKF bundle) |
 
-Plus `cogs init [--karpathy]` (scaffold a vault), `cogs status`, `cogs query "<cypher>"`.
+Plus `cogs init [--karpathy\|--okf]` (scaffold a vault), `cogs status`, `cogs query "<cypher>"`.
 
 ## Quick tour
 
@@ -95,6 +104,45 @@ The LLM backend is pluggable via `[llm]` in `cogs.toml`, mirroring the
 embedding provider: any OpenAI-compatible endpoint — **omlx** (Apple-Silicon
 MLX, the local default), Ollama, OpenAI — or Anthropic. Local-first works
 with zero data leaving the machine.
+
+## OKF interoperability (`cogs okf`)
+
+[OKF](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing)
+(Open Knowledge Format) v0.1 is Google Cloud's open interchange format for
+knowledge bases: knowledge is a directory
+of markdown files where the **file path is a concept's identity**, plain
+markdown `[text](path.md)` links form the graph, frontmatter carries a small
+queryable set (`type, title, description, resource, tags, timestamp`), and
+`index.md` / `log.md` are reserved files. cogs is natively `kind` + `[[wikilinks]]`,
+so the interop layer is **additive** — native vaults are untouched.
+
+```sh
+# Consume: index any OKF bundle (dir, .tar.gz/.tgz, or git URL) into a graph
+cogs okf import ./some-okf-bundle
+cogs okf import https://github.com/org/knowledge-base.git
+cogs okf import bundle.tar.gz
+# …then ask / viz / MCP over it as usual.
+
+# Check a vault against OKF v0.1 (every concept has `type`, links resolve)
+cogs okf lint
+
+# Produce: emit the current cogs vault as a portable OKF bundle
+cogs okf export --out ./okf-out            # a directory
+cogs okf export --out ./bundle.tar.gz      # a tarball
+```
+
+Import applies an OKF-compatibility profile (`kind = "type"`, a
+`markdown_links`-sourced `LINKS_TO` edge) without writing into the bundle.
+Export rewrites `kind`→`type` and each `[[wikilink]]` into a relative
+`[label](path.md)` link, and ensures the reserved `index.md` / `log.md` exist.
+Authoring directly in OKF conventions is `cogs init --okf` (and
+`examples/okf.cogs.toml` is a ready-made compat profile). The round trip
+(import → export → re-import) is covered by an integration test.
+
+Because an imported bundle is just a cogs graph, every downstream surface comes
+for free: `cogs ask` answers questions over the OKF bundle with citations,
+`cogs viz` renders its link graph, and `cogs mcp` exposes it to AI agents as a
+queryable knowledge base — where OKF itself ships only a static HTML viewer.
 
 ## How it works
 
@@ -243,6 +291,8 @@ Shipped and in daily use:
   semantic overlay, health overlay, time lens; in the browser or a native
   toggleable window.
 - **MCP server** — nine read-only tools for the agent panel.
+- **OKF interop** — import/lint/export of OKF v0.1 bundles; cogs is both an OKF
+  consumer and producer (`cogs okf import|lint|export`, `cogs init --okf`).
 - **Vault scaffolding** — `cogs init --karpathy` lays down the three-layer
   structure + `AGENTS.md` operating manual; `/cogs-init` does it from the agent.
 - **Pluggable local models** — omlx/Ollama/OpenAI/Anthropic for chat and
