@@ -1,0 +1,58 @@
+# cogs config: OKF (Open Knowledge Format) v0.1 compatibility profile.
+#
+# OKF is Google Cloud's open spec for knowledge as a directory of markdown
+# files with YAML frontmatter: the file path is the concept's identity, plain
+# markdown [text](path.md) links form the graph, and `index.md` / `log.md` are
+# reserved. OKF mandates exactly one frontmatter field, `type`, and its
+# queryable field set is: type, title, description, resource, tags, timestamp.
+#
+# Drop this in an OKF bundle's root as cogs.toml (and gitignore .cogs/) to
+# index it with zero edits, or let `cogs okf import` apply it for you. This
+# profile is intentionally permissive: OKF producers define their own types.
+
+[vault]
+# OKF bundles put concept files anywhere under the root.
+notes = ["**/*.md"]
+# `index.md` (progressive disclosure) and `log.md` (history) are OKF reserved
+# files, not concepts. README is documentation. Drop the regenerable cache.
+exclude = ["index.md", "log.md", "README.md", ".cogs/**", ".git/**"]
+id_strip_prefix = ""
+
+[notes.fields]
+# OKF uses `type` where COGS natively uses `kind`.
+kind = "type"
+# Complete OKF's queryable set: these land on dedicated, queryable Note
+# columns rather than only inside frontmatter_json.
+title = "title"
+description = "description"
+resource = "resource"
+timestamp = "timestamp"
+
+[kinds]
+# OKF producers define their own `type` vocabulary — accept any value.
+values = []
+unknown = "allow"
+
+# The graph edge: standard markdown [text](target.md) body links. OKF has no
+# wikilinks, so this is the single body-link edge.
+[[edges]]
+name = "LINKS_TO"
+source = "markdown_links"
+
+[tags]
+field = "tags"
+# OKF tags live in frontmatter; don't scrape inline #hashtags from prose.
+inline = false
+
+[diagnostics]
+broken_link = "warn"
+ambiguous_link = "warn"
+
+# Embeddings/LLM are off by default; enable them to get semantic `cogs ask`
+# over the imported bundle (see examples/aoa-knowledge.cogs.toml for a filled
+# omlx profile).
+[embeddings]
+enabled = false
+
+[server]
+port = 7117
