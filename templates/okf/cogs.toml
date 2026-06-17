@@ -1,0 +1,41 @@
+# cogs config: OKF (Open Knowledge Format) v0.1 compatibility profile.
+#
+# This vault authors knowledge in OKF's interchange conventions: `type`-keyed
+# frontmatter and plain markdown [text](path.md) links (not COGS-native `kind`
+# + [[wikilinks]]). `index.md` and `log.md` are OKF reserved files.
+#
+# OKF's queryable field set: type, title, description, resource, tags, timestamp.
+
+[vault]
+notes = ["**/*.md"]
+exclude = ["index.md", "log.md", "README.md", ".cogs/**", ".git/**"]
+id_strip_prefix = ""
+
+[notes.fields]
+kind = "type"
+title = "title"
+description = "description"
+resource = "resource"
+timestamp = "timestamp"
+
+[kinds]
+values = []
+unknown = "allow"
+
+[[edges]]
+name = "LINKS_TO"
+source = "markdown_links"
+
+[tags]
+field = "tags"
+inline = false
+
+[diagnostics]
+broken_link = "warn"
+ambiguous_link = "warn"
+
+[embeddings]
+enabled = false
+
+[server]
+port = 7117

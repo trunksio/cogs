@@ -13,3 +13,12 @@ pub const KARPATHY_WIKI_INDEX: &str = include_str!("../templates/karpathy/wiki-i
 pub const KARPATHY_WIKI_LOG: &str = include_str!("../templates/karpathy/wiki-log.md");
 pub const KARPATHY_ZED_SETTINGS: &str = include_str!("../templates/karpathy/zed-settings.json");
 pub const KARPATHY_GITIGNORE: &str = include_str!("../templates/karpathy/gitignore");
+
+// OKF (Open Knowledge Format) scaffold: `type`-keyed frontmatter, plain
+// markdown links, reserved index.md/log.md, and the matching OKF-compat
+// cogs.toml. See templates/okf/.
+pub const OKF_COGS_TOML: &str = include_str!("../templates/okf/cogs.toml");
+pub const OKF_README: &str = include_str!("../templates/okf/README.md");
+pub const OKF_INDEX: &str = include_str!("../templates/okf/index.md");
+pub const OKF_LOG: &str = include_str!("../templates/okf/log.md");
+pub const OKF_EXAMPLE: &str = include_str!("../templates/okf/concepts/example.md");

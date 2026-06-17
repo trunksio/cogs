@@ -222,6 +222,59 @@ fn zero_config_vault_works() {
     assert_eq!(q1(&db, "MATCH (t:Tag) RETURN count(t)"), 2);
 }
 
+const OKF_CONFIG: &str = r#"
+[notes.fields]
+kind = "type"
+description = "description"
+resource = "resource"
+timestamp = "timestamp"
+
+[kinds]
+unknown = "allow"
+
+[[edges]]
+name = "LINKS_TO"
+source = "markdown_links"
+
+[tags]
+inline = false
+"#;
+
+#[test]
+fn okf_markdown_links_build_graph() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "cogs.toml", OKF_CONFIG);
+    write(
+        tmp.path(),
+        "concepts/agentic-unit.md",
+        "---\ntype: concept\ndescription: The core unit\ntimestamp: 2026-06-01\n---\nSee [contract](au-contract.md) and [registry](../entities/registry.md).\n",
+    );
+    write(
+        tmp.path(),
+        "concepts/au-contract.md",
+        "---\ntype: concept\n---\nRelates to [the unit](agentic-unit.md).\n",
+    );
+    write(
+        tmp.path(),
+        "entities/registry.md",
+        "---\ntype: entity\n---\nProduct page, links to [unit](../concepts/agentic-unit.md).\n",
+    );
+    let vault = Vault::discover(tmp.path()).unwrap();
+    let db = GraphDb::open_rw(&vault, false).unwrap();
+    let out = SyncEngine::new(&vault).unwrap().sync(&db, false).unwrap();
+    assert_eq!(out.notes_synced, 3);
+    // au->au-contract, au->entities-registry, au-contract->au, registry->au = 4
+    assert_eq!(q1(&db, "MATCH (:Note)-[r:LINKS_TO]->(:Note) RETURN count(r)"), 4);
+    // OKF queryable columns land on the node.
+    assert_eq!(
+        q1(
+            &db,
+            "MATCH (n:Note {id: 'concepts-agentic-unit'}) WHERE n.description = 'The core unit' AND n.kind = 'concept' RETURN count(n)"
+        ),
+        1
+    );
+}
+
 #[test]
 fn fts_search_works_after_sync() {
     let tmp = tempfile::tempdir().unwrap();

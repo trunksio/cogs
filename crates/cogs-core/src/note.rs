@@ -57,6 +57,13 @@ pub struct ParsedNote {
     pub status: Option<String>,
     pub created: Option<NaiveDate>,
     pub updated: Option<NaiveDate>,
+    /// OKF `description`: a short summary string (queryable column).
+    pub description: Option<String>,
+    /// OKF `resource`: a pointer to an external/canonical resource (URL or
+    /// path), kept as a queryable column.
+    pub resource: Option<String>,
+    /// OKF `timestamp`: an ISO date on the concept (queryable column).
+    pub timestamp: Option<NaiveDate>,
     pub tags: Vec<String>,
     /// Full frontmatter projected to JSON (stored on the node for filtering).
     pub frontmatter_json: String,
@@ -67,6 +74,10 @@ pub struct ParsedNote {
     /// sha256 hex of `body_text`.
     pub body_hash: String,
     pub links: Vec<Link>,
+    /// Standard markdown `[text](target.md)` body links — the OKF graph edge
+    /// source. Targets are stored vault-relative (resolved against this note's
+    /// directory) so they feed the same id resolution as wikilinks.
+    pub md_links: Vec<Link>,
     /// Frontmatter-driven edge values (source_refs, contradicts, ...), per configured field.
     pub edge_fields: Vec<EdgeFieldItem>,
     pub headings: Vec<Heading>,

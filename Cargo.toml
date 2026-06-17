@@ -51,6 +51,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "io-std", "macros"] }
 rmcp = { version = "1.7", features = ["server", "transport-io", "macros"] }
 serde = { workspace = true, features = ["derive"] }
 chrono.workspace = true
+toml.workspace = true
+regex.workspace = true
+tempfile = "3"
 wry = { version = "0.55", optional = true }
 tao = { version = "0.35", optional = true }
 
