@@ -62,12 +62,15 @@ pub struct Extraction {
     pub publisher: Option<String>,
 }
 
-/// A standalone, independently citable factual statement.
+/// A standalone, independently citable factual statement. All fields are
+/// deserialization-lenient (truncation repair can produce empty items);
+/// validation filters empties.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claim {
+    #[serde(default)]
     pub text: String,
     /// Entity names mentioned by the claim (used for link candidates).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_list")]
     pub entities: Vec<String>,
 }
 
@@ -75,6 +78,7 @@ pub struct Claim {
 pub struct Quote {
     /// Must be a verbatim substring of the raw body (whitespace-tolerant);
     /// fabrications are dropped in Rust.
+    #[serde(default)]
     pub text: String,
     #[serde(default)]
     pub location: String,
@@ -82,6 +86,7 @@ pub struct Quote {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityMention {
+    #[serde(default)]
     pub name: String,
     /// "entity" (product/protocol/org/person) or "concept".
     #[serde(default)]

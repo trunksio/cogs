@@ -542,6 +542,9 @@ impl<'a> Ingester<'a> {
             .collect();
         ex.quotes.truncate(MAX_QUOTES);
 
+        // Entities: drop empties (truncation-repair artifacts).
+        ex.entities.retain(|e| !e.name.trim().is_empty());
+
         // Tags: lowercase tokens.
         let mut seen_tags = std::collections::HashSet::new();
         ex.tags.retain_mut(|t| {

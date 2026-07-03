@@ -159,7 +159,7 @@ pub fn repair_truncated_json(s: &str) -> Option<String> {
             _ => {}
         }
     }
-    let (end, open) = last_good?;
+    let (end, mut open) = last_good?;
     let mut out = s[start..start + end].trim_end().trim_end_matches(',').trim_end().to_string();
     // The cut may land right after a bare object KEY (`…, "key"` with its
     // value lost to truncation) — detect it by what precedes the final
@@ -175,6 +175,25 @@ pub fn repair_truncated_json(s: &str) -> Option<String> {
                 out.truncate(cut);
             }
         }
+    }
+    // Don't leave freshly opened but empty containers behind (`…, {` would
+    // close into an empty {} list item and can break typed parsing).
+    loop {
+        let trimmed = out.trim_end().trim_end_matches(',').trim_end().to_string();
+        let last = trimmed.as_bytes().last().copied();
+        let expected = open.last().copied();
+        match (last, expected) {
+            (Some(b'{'), Some(b'}')) | (Some(b'['), Some(b']')) => {
+                open.pop();
+                out = trimmed;
+                out.pop();
+                out = out.trim_end().trim_end_matches(',').trim_end().to_string();
+            }
+            _ => break,
+        }
+    }
+    if out.len() <= 1 {
+        return None; // nothing complete survived
     }
     for closer in open.iter().rev() {
         out.push(*closer as char);
