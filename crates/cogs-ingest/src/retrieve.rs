@@ -147,7 +147,7 @@ pub fn near_duplicates(
     );
 
     if let Some(embed) = embed {
-        let body = truncate_chars(raw_body, embed_char_cap);
+        let body = crate::text::truncate_chars(raw_body, embed_char_cap);
         if let Ok(vec) = embed.embed_query(body) {
             if let Ok(hits) = db.vector_search("Note", &vec, 8) {
                 let kinds = note_kinds(db, hits.iter().map(|(id, _)| id.clone()).collect())?;
@@ -182,14 +182,3 @@ fn note_kinds(db: &GraphDb, ids: Vec<String>) -> Result<HashMap<String, String>>
         .collect())
 }
 
-/// Truncate at a char boundary at or below `cap` bytes.
-pub fn truncate_chars(s: &str, cap: usize) -> &str {
-    if s.len() <= cap {
-        return s;
-    }
-    let mut end = cap;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}

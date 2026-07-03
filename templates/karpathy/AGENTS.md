@@ -29,7 +29,10 @@ regenerable — never commit it).
 - `health_report()` — orphans, contradiction pairs, stale pages
 
 **CLI**: `cogs sync` (reindex; runs automatically while the editor is open),
-`cogs status`, `cogs query "<cypher>"`, `cogs viz --toggle` (graph window).
+`cogs status`, `cogs query "<cypher>"`, `cogs viz --toggle` (graph window),
+`cogs ingest <raw-file>` (automates the ingest workflow below — writes the
+source page + page updates to the working tree for review via `git diff`),
+`cogs distill` (mine accepted pages + ingest runs into a fine-tuning dataset).
 
 **Editor (LSP)**: `[[link]]` completion, go-to-definition, backlinks via
 find-references, hover previews, broken-link diagnostics, rename-across-vault.
@@ -75,6 +78,15 @@ One idea per file; the page is the sole authority on its topic.
    and set `contradicts:` frontmatter; flag it to the human.
 6. **Append one entry to `wiki/log.md`**: `## [YYYY-MM-DD] ingest | <source>`
    listing pages touched.
+
+`cogs ingest <raw-file>` automates steps 2–6 with the `[llm]` model: it
+extracts claims/quotes/entities (quotes validated verbatim against the raw),
+weaves wikilinks against existing pages, appends dated sections, flags
+contradictions, and writes everything to the working tree — review with
+`git diff`, revert what you disagree with. It refuses to run over a dirty
+`wiki/` tree. Every model call is captured under `.cogs/training/` (not
+regenerable — move it out before deleting `.cogs/`); `cogs distill
+--from-runs` later pairs those inputs with whatever survived your review.
 
 ## Answering questions
 

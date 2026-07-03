@@ -13,6 +13,8 @@ One binary, several roles:
 | Command | Role |
 |---|---|
 | `cogs ask` | Answer a question using **only** the wiki — multi-step retrieval (BM25 + vector + graph) and grounded synthesis with citations; abstains when the wiki is silent |
+| `cogs ingest` | Turn a raw capture into a cited source page + concept/entity page updates (LLM-drafted, Rust-validated), written to the working tree for review via `git diff` |
+| `cogs distill` | Mine accepted pages and past ingest runs into an SFT dataset (`mlx_lm.lora`-ready) for fine-tuning a local ingest model |
 | `cogs lsp` | LSP over stdio: `[[link]]` completion, go-to-definition, backlinks, hover previews, broken-link diagnostics, rename-across-vault, symbols |
 | `cogs serve` | Graph visualization + JSON API at `http://127.0.0.1:7117` |
 | `cogs viz` | The same viz in a native window with a show/hide toggle (`--toggle`, `--quit`) — bind it to a key in Zed |
@@ -95,6 +97,55 @@ The LLM backend is pluggable via `[llm]` in `cogs.toml`, mirroring the
 embedding provider: any OpenAI-compatible endpoint — **omlx** (Apple-Silicon
 MLX, the local default), Ollama, OpenAI — or Anthropic. Local-first works
 with zero data leaving the machine.
+
+## Ingesting captures (`cogs ingest`)
+
+```sh
+cogs ingest raw/clips/2026-07-03-some-article.md
+git diff   # review; revert anything you disagree with
+```
+
+Automates the AGENTS.md ingest workflow with the `[llm]` model, under strict
+Rust-side validation — the model drafts, the engine verifies:
+
+- **Extract**: summary, 3–12 independently citable claims, verbatim quotes
+  (checked against the raw byte-for-byte, whitespace-tolerantly — fabricated
+  quotes are dropped), entities, tags. Long captures are chunked at `##`
+  boundaries and merged.
+- **Weave**: claims come back wikilinked against retrieval-ranked existing
+  pages. A claim may gain `[[brackets]]` but never change text (violations
+  revert); links to nonexistent pages are unwrapped; genuinely new
+  entities/concepts get stub pages.
+- **Update**: affected pages gain an append-only dated section (matching how
+  curated vaults accrete) + `source_refs`/`updated` frontmatter edits that
+  never re-serialise your YAML. Updates that don't cite the new source page
+  are rejected.
+- **Contradict**: claims are checked against updated/near-duplicate pages;
+  confirmed conflicts land as a `## Contradictions` section + `contradicts:`
+  frontmatter (→ `CONTRADICTS` edge) on the new source page, never by
+  rewriting the old page.
+
+It refuses to run over a dirty `wiki/` tree (`--force` overrides), detects
+already-ingested and near-duplicate captures, appends the `wiki/log.md`
+entry, and re-syncs the graph. `--dry-run` prints everything it would write.
+
+## Distilling a training set (`cogs distill`)
+
+Every `cogs ingest` records its model calls under `.cogs/training/` (treat as
+precious — it is the one thing in `.cogs/` that can't be regenerated).
+`cogs distill` turns the vault into `train.jsonl`/`valid.jsonl` (chat format,
+`python3 -m mlx_lm.lora --data <dir>`-compatible):
+
+- **Mined from the vault, today**: every accepted source page paired back to
+  its raw capture becomes an extraction + wikilinking example — a mature
+  vault is already a training set.
+- **`--from-runs`**: recorded ingest inputs paired with the **surviving** file
+  content — your post-review edits become the labels; deleted pages and
+  removed sections count as rejections and are skipped.
+
+Both use the exact runtime prompt templates, so a LoRA-tuned small model is a
+drop-in replacement for the teacher: point `[llm]` at it and ingest runs
+fully local.
 
 ## How it works
 
@@ -247,6 +298,12 @@ Shipped and in daily use:
   structure + `AGENTS.md` operating manual; `/cogs-init` does it from the agent.
 - **Pluggable local models** — omlx/Ollama/OpenAI/Anthropic for chat and
   embeddings; local-first on Apple Silicon.
+- **`cogs ingest`** — LLM-drafted, Rust-validated ingest of raw captures
+  (source page, wikilink weaving, append-only page updates, contradiction
+  flags) delivered as a reviewable working-tree diff, with every model call
+  captured as training data.
+- **`cogs distill`** — the vault (and reviewed ingest runs) mined into an
+  mlx_lm-ready SFT dataset under the same prompts ingest uses at runtime.
 - **Distribution** — per-platform release binaries + extension auto-download.
 
 ## Roadmap
@@ -259,12 +316,10 @@ Shipped and in daily use:
 - **Controlled vocabularies** — a governed canonical entity layer (SKOS-style
   aliases, entity-linking/resolution, CODEOWNERS + CI approval) to stop entity
   drift ("A2A" vs "Agent2Agent").
-- **Ingest agent** — `cogs ingest <raw>` automates the AGENTS.md workflow
-  (source page, claim extraction, wikilink suggestion, contradiction flagging)
-  as a reviewable diff.
-- **Finetuned ingest model embedded in cogs** — distill the vault into training
-  pairs, LoRA-tune a small MLX model, and bundle it as a first-class local
-  provider tuned to the vault's own conventions.
+- **Finetuned ingest model embedded in cogs** — LoRA-tune a small MLX model on
+  the `cogs distill` dataset (entity extraction + summarisation tuned to the
+  vault's own conventions), distribute it via `cogs model pull`, and manage it
+  as a first-class local provider.
 - Zed extension registry submission.
 
 ## Development
@@ -280,4 +335,5 @@ it's cached afterwards. macOS/Linux binaries embedding lbug must link with
 `-rdynamic` (see `build.rs`) or the FTS/VECTOR extensions fail to load. The
 crates: `cogs-core` (model/parse/resolve), `cogs-graph` (LadybugDB + embeddings),
 `cogs-runtime` (watcher/election), `cogs-lsp`, `cogs-server`, `cogs-llm`
-(chat providers), `cogs-ask` (the answering pipeline), and the `cogs` binary.
+(chat providers), `cogs-ask` (the answering pipeline), `cogs-ingest` (the
+ingest pipeline + distill), and the `cogs` binary.

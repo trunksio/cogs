@@ -84,6 +84,30 @@ enum Command {
         #[arg(long)]
         training_dir: Option<PathBuf>,
     },
+    /// Mine the vault (and captured ingest runs) into an SFT dataset for
+    /// fine-tuning a local ingest model (mlx_lm.lora-compatible JSONL)
+    Distill {
+        /// Output directory for train.jsonl/valid.jsonl (default
+        /// <state-dir>/training/dataset)
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Validation fraction, deterministic by pair key
+        #[arg(long, default_value_t = 0.1)]
+        split: f64,
+        /// Comma-separated task filter: extract,suggest_links,page_update,contradiction
+        #[arg(long)]
+        tasks: Option<String>,
+        /// Also mine captured ingest runs, pairing original inputs with
+        /// surviving (post-review) file content
+        #[arg(long)]
+        from_runs: bool,
+        /// Training-record directory (default <state-dir>/training)
+        #[arg(long)]
+        training_dir: Option<PathBuf>,
+        /// Emit stats as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the LSP server on stdio (launched by editors)
     Lsp,
     /// Run the MCP server on stdio (for AI agents)
@@ -142,6 +166,19 @@ fn main() -> Result<()> {
                 capture: !no_training_capture,
                 training_dir: training_dir.clone(),
                 ..Default::default()
+            },
+            *json,
+        ),
+        Command::Distill { out, split, tasks, from_runs, training_dir, json } => distill(
+            &cli,
+            cogs_ingest::DistillOptions {
+                out: out.clone(),
+                split: *split,
+                tasks: tasks
+                    .as_ref()
+                    .map(|t| t.split(',').map(|s| s.trim().to_string()).collect()),
+                from_runs: *from_runs,
+                training_dir: training_dir.clone(),
             },
             *json,
         ),
@@ -392,33 +429,43 @@ fn ask(cli: &Cli, question: &str, as_json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Optional embedder per config, downgrading failures to a warning.
+fn make_embedder(vault: &Vault) -> Option<Box<dyn cogs_graph::embed::EmbeddingProvider>> {
+    if !vault.config.embeddings.enabled {
+        return None;
+    }
+    cogs_graph::make_provider(&vault.config.embeddings)
+        .map_err(|e| tracing::warn!("semantic retrieval disabled: {e:#}"))
+        .ok()
+}
+
+/// Freshen the index if we can win the writer; a running cogs process
+/// (LSP/MCP primary) keeps it fresh otherwise, so read-only is fine.
+fn open_db_freshened(
+    vault: &Vault,
+    embed: Option<&dyn cogs_graph::embed::EmbeddingProvider>,
+) -> Result<GraphDb> {
+    match GraphDb::open_rw(vault, false) {
+        Ok(db) => {
+            if let Err(e) = SyncEngine::new(vault)?.sync_with(&db, false, embed) {
+                tracing::warn!("pre-run sync failed: {e:#}");
+            }
+            Ok(db)
+        }
+        Err(e) => {
+            tracing::info!("graph writer busy ({e:#}); continuing read-only");
+            GraphDb::open_ro(vault)
+                .context("opening graph db (run `cogs sync` first if it doesn't exist)")
+        }
+    }
+}
+
 fn ingest(cli: &Cli, raw_file: &PathBuf, opts: cogs_ingest::IngestOptions, as_json: bool) -> Result<()> {
     let vault = open_vault(cli)?;
     let chat = cogs_llm::make_provider(&vault.config.llm)
         .context("building the LLM provider (check [llm] in cogs.toml)")?;
-    let embed = if vault.config.embeddings.enabled {
-        cogs_graph::make_provider(&vault.config.embeddings)
-            .map_err(|e| tracing::warn!("semantic retrieval disabled: {e:#}"))
-            .ok()
-    } else {
-        None
-    };
-
-    // Freshen the index if we can win the writer; a running cogs process
-    // (LSP/MCP primary) keeps it fresh otherwise, so read-only is fine.
-    let db = match GraphDb::open_rw(&vault, false) {
-        Ok(db) => {
-            if let Err(e) = SyncEngine::new(&vault)?.sync_with(&db, false, embed.as_deref()) {
-                tracing::warn!("pre-ingest sync failed: {e:#}");
-            }
-            db
-        }
-        Err(e) => {
-            tracing::info!("graph writer busy ({e:#}); continuing read-only");
-            GraphDb::open_ro(&vault)
-                .context("opening graph db (run `cogs sync` first if it doesn't exist)")?
-        }
-    };
+    let embed = make_embedder(&vault);
+    let db = open_db_freshened(&vault, embed.as_deref())?;
 
     let dry_run = opts.dry_run;
     let ingester = cogs_ingest::Ingester::new(&vault, &db, chat.as_ref(), embed.as_deref(), opts);
@@ -474,6 +521,34 @@ fn ingest(cli: &Cli, raw_file: &PathBuf, opts: cogs_ingest::IngestOptions, as_js
         println!("note: graph not re-synced here (a running cogs process will, or run `cogs sync`)");
     }
     println!("review with: git diff");
+    Ok(())
+}
+
+fn distill(cli: &Cli, opts: cogs_ingest::DistillOptions, as_json: bool) -> Result<()> {
+    let vault = open_vault(cli)?;
+    let embed = make_embedder(&vault);
+    let db = open_db_freshened(&vault, embed.as_deref())?;
+
+    let stats = cogs_ingest::distill(&vault, &db, embed.as_deref(), &opts)?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&stats)?);
+        return Ok(());
+    }
+    println!("dataset written to {}", stats.out_dir.display());
+    println!("train: {}  valid: {}", stats.train, stats.valid);
+    for (task, n) in &stats.emitted {
+        println!("  {task}: {n}");
+    }
+    if !stats.skipped.is_empty() {
+        println!("skipped:");
+        for (reason, n) in &stats.skipped {
+            println!("  {n} × {reason}");
+        }
+    }
+    println!(
+        "fine-tune with: python3 -m mlx_lm.lora --model <base> --train --data {}",
+        stats.out_dir.display()
+    );
     Ok(())
 }
 

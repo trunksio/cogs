@@ -12,16 +12,19 @@
 //! own ingest history becomes the SFT dataset for a small local model
 //! (`cogs distill`).
 
+mod distill;
 pub mod fm_edit;
 pub mod git;
 mod pipeline;
 pub mod prompts;
 mod render;
 mod retrieve;
+mod text;
 pub mod training;
 
 use serde::{Deserialize, Serialize};
 
+pub use distill::{distill, DistillOptions, DistillStats};
 pub use pipeline::{IngestOptions, IngestReport, Ingester, PlannedWriteView};
 pub use retrieve::NearDuplicate;
 
