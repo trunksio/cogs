@@ -9,12 +9,14 @@ use cogs_core::note::ParsedResource;
 use crate::{ContradictionFinding, Extraction};
 use crate::retrieve::NearDuplicate;
 
-/// Render the new `sources/<slug>.md` page per the AGENTS.md schema.
+/// Render the new `sources/<slug>.md` page per the AGENTS.md schema. Claim
+/// texts are expected to already carry their wikilinks (weave output).
 pub fn source_page(
     ex: &Extraction,
     raw: &ParsedResource,
     raw_rel: &str,
     today: NaiveDate,
+    cross_references: &[String],
     contradictions: &[ContradictionFinding],
 ) -> String {
     let mut fm = String::from("---\n");
@@ -77,7 +79,49 @@ pub fn source_page(
         }
     }
 
+    if !cross_references.is_empty() {
+        body.push_str("\n## Cross-references\n\n");
+        for id in cross_references {
+            body.push_str(&format!("- [[{id}]]\n"));
+        }
+    }
+
     format!("{fm}{body}")
+}
+
+/// A stub page for a newly identified entity/concept: blurb + the claims that
+/// mention it, citing the source.
+pub fn new_page(
+    spec: &crate::NewPageSpec,
+    claims: &[String],
+    source_slug: &str,
+    today: NaiveDate,
+    section_heading: &str,
+) -> String {
+    let mut fm = String::from("---\n");
+    fm.push_str(&format!("title: {}\n", yaml_scalar(&spec.title)));
+    fm.push_str(&format!("kind: {}\n", yaml_scalar(&spec.kind)));
+    fm.push_str("status: draft\n");
+    fm.push_str(&format!("updated: {today}\n"));
+    fm.push_str("tags: []\n");
+    fm.push_str("owner: llm\n---\n");
+
+    let mut body = format!("\n# {}\n", spec.title);
+    if !spec.blurb.trim().is_empty() {
+        body.push_str(&format!("\n{}\n", spec.blurb.trim()));
+    }
+    body.push_str(&format!("\n{section_heading}\n\n"));
+    for c in claims {
+        body.push_str(&format!("- {c}\n"));
+    }
+    body.push_str(&format!("\nSource: [[{source_slug}]]\n"));
+    format!("{fm}{body}")
+}
+
+/// The section appended to an existing page: heading rendered here, body from
+/// the (validated) model output.
+pub fn update_section(section_heading: &str, section_md: &str) -> String {
+    format!("\n{section_heading}\n\n{}\n", section_md.trim())
 }
 
 /// One appended `log.md` entry in the vault's observed batch format.

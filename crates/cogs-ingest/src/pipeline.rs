@@ -2,6 +2,7 @@
 //! materialise → sync. Weaving (link suggestion, page updates, contradiction
 //! checks) lands in milestone 2.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -13,22 +14,34 @@ use tracing::{info, warn};
 use cogs_ask::query::cypher_escape;
 use cogs_core::config::{EdgeConfig, EdgeTarget, Vault};
 use cogs_core::note::ParsedResource;
-use cogs_core::parse::{parse_resource, sha256_hex};
+use cogs_core::parse::{
+    parse_resource, scan_wikilinks, sha256_hex, split_frontmatter, strip_wikilinks_for_fts,
+};
+use cogs_core::resolve::{LinkResolver, Resolution};
 use cogs_core::scan::VaultScanner;
 use cogs_graph::embed::EmbeddingProvider;
 use cogs_graph::{GraphDb, SyncEngine};
 use cogs_llm::ChatProvider;
 
-use crate::retrieve::{self, truncate_chars, NearDuplicate};
+use crate::retrieve::{self, truncate_chars, NearDuplicate, NoteMeta};
 use crate::training::{
     RunManifest, TaskKind, Teacher, TrainingRecorder, WriteKind, WriteRecord,
 };
-use crate::{git, prompts, render, ContradictionFinding, Extraction};
+use crate::{
+    fm_edit, git, prompts, render, ContradictionCheck, ContradictionFinding, Extraction,
+    LinkPlan, PageUpdate,
+};
 
 /// Bodies longer than this are chunked at `##` boundaries for extraction.
 const CHUNK_CHARS: usize = 28_000;
 const MAX_CLAIMS: usize = 12;
 const MAX_QUOTES: usize = 6;
+const MAX_NEW_PAGES: usize = 6;
+const MAX_CROSS_REFS: usize = 12;
+/// Page body chars shown to the weave/contradiction prompts.
+const PAGE_BODY_CAP: usize = 6_000;
+/// Contradiction checks run over at most this many pages per ingest.
+const MAX_CONTRADICTION_PAGES: usize = 8;
 
 pub struct IngestOptions {
     pub force: bool,
@@ -93,6 +106,9 @@ enum Action {
     Create,
     /// Appended to the end (file created if missing).
     Append,
+    /// Full-content replacement of an existing note (append-only section +
+    /// frontmatter edit, computed upstream). Target must exist.
+    Update,
 }
 
 struct PlannedWrite {
@@ -101,6 +117,20 @@ struct PlannedWrite {
     content: String,
     seq: Option<u32>,
     section_heading: Option<String>,
+    /// What distill should hash/track (the appended section for updates);
+    /// defaults to the full content.
+    section_content: Option<String>,
+}
+
+/// What the weave stage decided: source-page extras plus the writes beyond
+/// the source page itself.
+struct WeaveOutcome {
+    /// Path-form link targets for the source page's `## Cross-references`.
+    cross_references: Vec<String>,
+    contradictions: Vec<ContradictionFinding>,
+    writes: Vec<PlannedWrite>,
+    pages_created: Vec<String>,
+    pages_updated: Vec<String>,
 }
 
 pub struct Ingester<'a> {
@@ -229,43 +259,60 @@ impl<'a> Ingester<'a> {
             ));
         }
 
+        // ---- stage 3: weave (links, page updates, contradictions) ---------
+        let mut extraction = extraction;
+        let weave = self.weave(
+            &teacher,
+            &mut extraction,
+            &raw_rel,
+            source_edge,
+            &near_duplicates,
+            &prefix,
+            &mut warnings,
+        )?;
+
         // ---- stage 4: materialise -----------------------------------------
-        // (stage 3, weaving, lands in milestone 2)
         let slug = &extraction.suggested_slug;
         let source_rel = format!("{prefix}sources/{slug}.md");
-        let contradictions: Vec<ContradictionFinding> = vec![];
-        let page_md =
-            render::source_page(&extraction, &raw, &raw_rel, self.opts.today, &contradictions);
+        let page_md = render::source_page(
+            &extraction,
+            &raw,
+            &raw_rel,
+            self.opts.today,
+            &weave.cross_references,
+            &weave.contradictions,
+        );
         let log_rel = format!("{prefix}log.md");
         let log_md = render::log_entry(
             self.opts.today,
             &raw.title,
             &raw_rel,
             slug,
-            &[],
-            &[],
-            &contradictions,
+            &weave.pages_updated,
+            &weave.pages_created,
+            &weave.contradictions,
             &near_duplicates,
             &run_id,
             &self.vault.config.llm.model,
         );
 
-        let writes = vec![
-            PlannedWrite {
-                rel_path: source_rel.clone(),
-                action: Action::Create,
-                content: page_md,
-                seq: Some(extract_seq),
-                section_heading: None,
-            },
-            PlannedWrite {
-                rel_path: log_rel,
-                action: Action::Append,
-                content: log_md,
-                seq: None,
-                section_heading: Some(format!("## [{}] ingest | {}", self.opts.today, raw.title)),
-            },
-        ];
+        let mut writes = vec![PlannedWrite {
+            rel_path: source_rel.clone(),
+            action: Action::Create,
+            content: page_md,
+            seq: Some(extract_seq),
+            section_heading: None,
+            section_content: None,
+        }];
+        writes.extend(weave.writes);
+        writes.push(PlannedWrite {
+            rel_path: log_rel,
+            action: Action::Append,
+            content: log_md,
+            seq: None,
+            section_heading: Some(format!("## [{}] ingest | {}", self.opts.today, raw.title)),
+            section_content: None,
+        });
 
         if self.opts.dry_run {
             return Ok(IngestReport {
@@ -273,9 +320,9 @@ impl<'a> Ingester<'a> {
                 raw_path: raw_rel,
                 already_ingested: None,
                 source_page: Some(source_rel),
-                pages_updated: vec![],
-                pages_created: vec![],
-                contradictions,
+                pages_updated: weave.pages_updated,
+                pages_created: weave.pages_created,
+                contradictions: weave.contradictions,
                 near_duplicates,
                 warnings,
                 training_records: 0,
@@ -288,6 +335,7 @@ impl<'a> Ingester<'a> {
                         action: match w.action {
                             Action::Create => "create".into(),
                             Action::Append => "append".into(),
+                            Action::Update => "update".into(),
                         },
                         content: w.content.clone(),
                     })
@@ -317,9 +365,9 @@ impl<'a> Ingester<'a> {
             raw_path: raw_rel,
             already_ingested: None,
             source_page: Some(source_rel),
-            pages_updated: vec![],
-            pages_created: vec![],
-            contradictions,
+            pages_updated: weave.pages_updated,
+            pages_created: weave.pages_created,
+            contradictions: weave.contradictions,
             near_duplicates,
             warnings,
             training_records: recorder.as_ref().map(|r| r.count()).unwrap_or(0),
@@ -497,6 +545,313 @@ impl<'a> Ingester<'a> {
         Ok((ex, warnings))
     }
 
+    // ---- stage 3: weave ------------------------------------------------------
+
+    #[allow(clippy::too_many_arguments)]
+    fn weave(
+        &self,
+        teacher: &Teacher,
+        ex: &mut Extraction,
+        raw_rel: &str,
+        source_edge: &EdgeConfig,
+        near_dups: &[NearDuplicate],
+        prefix: &str,
+        warnings: &mut Vec<String>,
+    ) -> Result<WeaveOutcome> {
+        let notes = retrieve::all_notes(self.db)?;
+        let by_id: HashMap<&str, &NoteMeta> = notes.iter().map(|n| (n.id.as_str(), n)).collect();
+        let plain_claims: Vec<String> = ex.key_claims.iter().map(|c| c.text.clone()).collect();
+        let entity_names: Vec<String> = ex.entities.iter().map(|e| e.name.clone()).collect();
+        let source_slug = ex.suggested_slug.clone();
+        let source_id = format!("sources-{source_slug}");
+
+        // Wikilink targets are path-form (`concepts/agent-registry`), not ids:
+        // that is what the vault's own resolver accepts.
+        let link_target = |meta: &NoteMeta| -> String {
+            meta.path
+                .strip_prefix(prefix)
+                .unwrap_or(&meta.path)
+                .trim_end_matches(".md")
+                .to_string()
+        };
+
+        let candidates = retrieve::candidate_pages(
+            self.db,
+            self.embed,
+            &plain_claims,
+            &entity_names,
+            (2 * self.opts.pages_cap).max(8),
+        )?;
+        let candidate_lines: Vec<String> = candidates
+            .iter()
+            .filter_map(|c| {
+                let meta = by_id.get(c.id.as_str())?;
+                Some(format!("{} — {} ({})", link_target(meta), c.title, c.kind))
+            })
+            .collect();
+
+        // ---- teacher call: link plan ---------------------------------------
+        let (plan, plan_seq): (LinkPlan, u32) = teacher.call(
+            TaskKind::SuggestLinks,
+            json!({ "raw_path": raw_rel }),
+            &prompts::suggest_links_messages(&plain_claims, &candidate_lines, &source_slug),
+            &prompts::extract_params(self.vault.config.llm.max_tokens),
+        )?;
+
+        // ---- validate: new pages -------------------------------------------
+        let slug_re = regex::Regex::new(r"^[a-z0-9][a-z0-9-]{1,60}$").unwrap();
+        let kinds = &self.vault.config.kinds.values;
+        let mut new_pages = Vec::new();
+        for mut spec in plan.new_pages {
+            spec.slug = spec.slug.trim().to_lowercase();
+            if !slug_re.is_match(&spec.slug) {
+                warnings.push(format!("dropped new page with malformed slug {:?}", spec.slug));
+                continue;
+            }
+            if !matches!(spec.dir.as_str(), "entities" | "concepts") {
+                warnings.push(format!(
+                    "dropped new page {:?}: dir must be entities|concepts, got {:?}",
+                    spec.slug, spec.dir
+                ));
+                continue;
+            }
+            let id = format!("{}-{}", spec.dir, spec.slug);
+            if by_id.contains_key(id.as_str())
+                || self.vault.root.join(format!("{prefix}{}/{}.md", spec.dir, spec.slug)).exists()
+            {
+                warnings.push(format!("proposed new page {id} already exists — not recreating"));
+                continue;
+            }
+            if spec.kind.is_empty() || (!kinds.is_empty() && !kinds.contains(&spec.kind)) {
+                spec.kind =
+                    if spec.dir == "entities" { "entity".into() } else { "concept".into() };
+            }
+            if spec.title.trim().is_empty() {
+                spec.title = spec.slug.replace('-', " ");
+            }
+            new_pages.push(spec);
+            if new_pages.len() >= MAX_NEW_PAGES {
+                break;
+            }
+        }
+
+        // Resolver over existing notes + proposed pages + the source page, so
+        // link validation accepts exactly what will exist after this ingest.
+        let mut pairs: Vec<(String, String)> =
+            notes.iter().map(|n| (n.id.clone(), n.slug.clone())).collect();
+        for spec in &new_pages {
+            pairs.push((format!("{}-{}", spec.dir, spec.slug), spec.slug.clone()));
+        }
+        pairs.push((source_id.clone(), source_slug.clone()));
+        let resolver = LinkResolver::new(pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())));
+
+        // ---- validate: linked claims (verbatim apart from brackets) --------
+        let mut linked = plan.linked_claims;
+        if linked.len() != plain_claims.len() {
+            warnings.push(format!(
+                "weave returned {} claims for {} inputs; keeping the originals unlinked",
+                linked.len(),
+                plain_claims.len()
+            ));
+            linked = plain_claims.clone();
+        }
+        for (i, lc) in linked.iter_mut().enumerate() {
+            let cleaned = sanitize_links(lc, &resolver, "sources", warnings);
+            if normalize(&strip_wikilinks_for_fts(&cleaned)) != normalize(&plain_claims[i]) {
+                warnings.push(format!(
+                    "weave rewrote claim {} — keeping the original text",
+                    i + 1
+                ));
+                *lc = plain_claims[i].clone();
+            } else {
+                *lc = cleaned;
+            }
+        }
+        for (c, l) in ex.key_claims.iter_mut().zip(&linked) {
+            c.text = l.clone();
+        }
+
+        // ---- validate: cross references + update targets -------------------
+        let mut cross_references: Vec<String> = Vec::new();
+        for target in plan.cross_references {
+            let target = target.trim().trim_matches(|c| c == '[' || c == ']').to_string();
+            if let Resolution::Resolved(_) = resolver.resolve(&target, "sources") {
+                if !cross_references.contains(&target) {
+                    cross_references.push(target);
+                }
+            }
+        }
+        cross_references.truncate(MAX_CROSS_REFS);
+
+        let candidate_ids: HashSet<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
+        let mut update_targets: Vec<String> = Vec::new();
+        for t in plan.update_targets {
+            let Resolution::Resolved(id) = resolver.resolve(t.trim(), "") else { continue };
+            let Some(meta) = by_id.get(id.as_str()) else { continue };
+            if candidate_ids.contains(id.as_str())
+                && meta.kind != "source"
+                && !update_targets.contains(&id)
+            {
+                update_targets.push(id);
+            }
+        }
+        update_targets.truncate(self.opts.pages_cap);
+
+        // ---- new page stubs -------------------------------------------------
+        let mut writes = Vec::new();
+        let mut pages_created = Vec::new();
+        for spec in &new_pages {
+            let id = format!("{}-{}", spec.dir, spec.slug);
+            let claims_for: Vec<String> = linked
+                .iter()
+                .filter(|c| links_to(c, &resolver, "sources", &id))
+                .cloned()
+                .collect();
+            let heading = format!("## From ingest ({})", self.opts.today);
+            let content =
+                render::new_page(spec, &claims_for, &source_slug, self.opts.today, &heading);
+            writes.push(PlannedWrite {
+                rel_path: format!("{prefix}{}/{}.md", spec.dir, spec.slug),
+                action: Action::Create,
+                content,
+                seq: Some(plan_seq),
+                section_heading: None,
+                section_content: None,
+            });
+            pages_created.push(id);
+        }
+
+        // ---- per-page updates (teacher, one call per page) ------------------
+        let field = source_edge.field.as_deref().unwrap_or("source_refs");
+        let mut pages_updated = Vec::new();
+        for target in &update_targets {
+            let Some(meta) = by_id.get(target.as_str()) else { continue };
+            let file_text = match std::fs::read_to_string(self.vault.root.join(&meta.path)) {
+                Ok(t) => t,
+                Err(e) => {
+                    warnings.push(format!("skipping update to {target}: {e}"));
+                    continue;
+                }
+            };
+            let (_, _, page_body, _) = split_frontmatter(&file_text);
+            let claims_for = relevant_claims(&linked, ex, &resolver, meta);
+            let (upd, seq): (PageUpdate, u32) = teacher.call(
+                TaskKind::PageUpdate,
+                json!({ "raw_path": raw_rel, "page_id": target }),
+                &prompts::page_update_messages(
+                    target,
+                    &meta.title,
+                    &meta.kind,
+                    truncate_chars(page_body, PAGE_BODY_CAP),
+                    &claims_for,
+                    &source_slug,
+                ),
+                &prompts::weave_params(),
+            )?;
+            if !upd.relevant || upd.section_md.trim().is_empty() {
+                info!("no genuinely new material for {target}");
+                continue;
+            }
+            let section = strip_heading_lines(&upd.section_md);
+            let section = sanitize_links(&section, &resolver, &meta.dir, warnings);
+            if !links_to(&section, &resolver, &meta.dir, &source_id) {
+                warnings.push(format!(
+                    "update for {target} dropped: the section never cites [[{source_slug}]]"
+                ));
+                continue;
+            }
+            let mut topic = upd.topic.split_whitespace().collect::<Vec<_>>().join(" ");
+            topic = topic.trim_matches(['#', ' ']).to_string();
+            if topic.is_empty() {
+                topic = "From ingest".into();
+            }
+            let mut heading = format!("## {topic} ({} ingest)", self.opts.today);
+            let mut n = 1;
+            while file_text.contains(&heading) {
+                n += 1;
+                heading = format!("## {topic} — {n} ({} ingest)", self.opts.today);
+            }
+            let base = match fm_edit::add_list_item(&file_text, field, raw_rel)
+                .and_then(|t| fm_edit::set_scalar(&t, "updated", &self.opts.today.to_string()))
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    warnings.push(format!("skipping update to {target}: {e}"));
+                    continue;
+                }
+            };
+            let section_block = render::update_section(&heading, &section);
+            let sep = if base.ends_with('\n') { "" } else { "\n" };
+            writes.push(PlannedWrite {
+                rel_path: meta.path.clone(),
+                action: Action::Update,
+                content: format!("{base}{sep}{section_block}"),
+                seq: Some(seq),
+                section_heading: Some(heading),
+                section_content: Some(section_block),
+            });
+            pages_updated.push(target.clone());
+        }
+
+        // ---- contradiction checks -------------------------------------------
+        let mut to_check: Vec<String> = update_targets.clone();
+        for d in near_dups {
+            if !to_check.contains(&d.id) {
+                to_check.push(d.id.clone());
+            }
+        }
+        to_check.truncate(MAX_CONTRADICTION_PAGES);
+        let mut contradictions: Vec<ContradictionFinding> = Vec::new();
+        for pid in &to_check {
+            let Some(meta) = by_id.get(pid.as_str()) else { continue };
+            let Ok(file_text) = std::fs::read_to_string(self.vault.root.join(&meta.path)) else {
+                continue;
+            };
+            let (_, _, page_body, _) = split_frontmatter(&file_text);
+            let (check, _seq): (ContradictionCheck, u32) = teacher.call(
+                TaskKind::Contradiction,
+                json!({ "raw_path": raw_rel, "page_id": pid }),
+                &prompts::contradiction_messages(
+                    pid,
+                    &meta.title,
+                    truncate_chars(page_body, PAGE_BODY_CAP),
+                    &plain_claims,
+                ),
+                &prompts::weave_params(),
+            )?;
+            for f in check.findings {
+                if &f.page_id != pid {
+                    warnings.push(format!(
+                        "dropped contradiction naming {} while checking {pid}",
+                        f.page_id
+                    ));
+                    continue;
+                }
+                let Some(exact) = find_verbatim(page_body, &f.existing_text) else {
+                    warnings.push(format!(
+                        "dropped contradiction on {pid}: quoted text not found in the page"
+                    ));
+                    continue;
+                };
+                if !plain_claims.iter().any(|c| normalize(c) == normalize(&f.new_claim)) {
+                    warnings.push(format!(
+                        "dropped contradiction on {pid}: claim text doesn't match any claim"
+                    ));
+                    continue;
+                }
+                contradictions.push(ContradictionFinding { existing_text: exact, ..f });
+            }
+        }
+
+        Ok(WeaveOutcome {
+            cross_references,
+            contradictions,
+            writes,
+            pages_created,
+            pages_updated,
+        })
+    }
+
     // ---- stage 4/5 ----------------------------------------------------------
 
     fn flush(&self, writes: &[PlannedWrite], prefix: &str) -> Result<Vec<WriteRecord>> {
@@ -523,6 +878,7 @@ impl<'a> Ingester<'a> {
             if let Some(parent) = abs.parent() {
                 std::fs::create_dir_all(parent)?;
             }
+            let tracked = w.section_content.as_deref().unwrap_or(&w.content);
             match w.action {
                 Action::Create => {
                     std::fs::write(&abs, &w.content)
@@ -532,7 +888,7 @@ impl<'a> Ingester<'a> {
                         rel_path: w.rel_path.clone(),
                         kind: WriteKind::Created,
                         section_heading: w.section_heading.clone(),
-                        content_hash: sha256_hex(&w.content),
+                        content_hash: sha256_hex(tracked),
                         seq: w.seq,
                     });
                 }
@@ -546,7 +902,22 @@ impl<'a> Ingester<'a> {
                         rel_path: w.rel_path.clone(),
                         kind: WriteKind::Appended,
                         section_heading: w.section_heading.clone(),
-                        content_hash: sha256_hex(&w.content),
+                        content_hash: sha256_hex(tracked),
+                        seq: w.seq,
+                    });
+                }
+                Action::Update => {
+                    if !abs.exists() {
+                        bail!("refusing to update missing file: {}", w.rel_path);
+                    }
+                    std::fs::write(&abs, &w.content)
+                        .with_context(|| format!("updating {}", w.rel_path))?;
+                    info!("updated {}", w.rel_path);
+                    records.push(WriteRecord {
+                        rel_path: w.rel_path.clone(),
+                        kind: WriteKind::Appended,
+                        section_heading: w.section_heading.clone(),
+                        content_hash: sha256_hex(tracked),
                         seq: w.seq,
                     });
                 }
@@ -571,6 +942,86 @@ impl<'a> Ingester<'a> {
                 false
             }
         }
+    }
+}
+
+// ---- weave helpers (pure, unit-tested) --------------------------------------
+
+/// Collapse whitespace for order-insensitive-of-formatting comparison.
+fn normalize(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Unwrap every wikilink in `text` whose target does not resolve — replaced
+/// by its alias (or the target's display text) — so a hallucinated target can
+/// never reach the vault as a broken link.
+fn sanitize_links(
+    text: &str,
+    resolver: &LinkResolver,
+    source_dir: &str,
+    warnings: &mut Vec<String>,
+) -> String {
+    let mut out = text.to_string();
+    let links = scan_wikilinks(text, 0);
+    for link in links.iter().rev() {
+        if matches!(resolver.resolve(&link.target, source_dir), Resolution::Resolved(_)) {
+            continue;
+        }
+        let display = link
+            .alias
+            .clone()
+            .unwrap_or_else(|| link.target.rsplit('/').next().unwrap_or("").to_string());
+        warnings.push(format!("unwrapped unresolvable link [[{}]]", link.target));
+        out.replace_range(link.span.clone(), &display);
+    }
+    out
+}
+
+/// Does any wikilink in `text` resolve to `id`?
+fn links_to(text: &str, resolver: &LinkResolver, source_dir: &str, id: &str) -> bool {
+    scan_wikilinks(text, 0)
+        .iter()
+        .any(|l| resolver.resolve(&l.target, source_dir).id() == Some(id))
+}
+
+/// Demote any markdown headings the model emitted inside a section body —
+/// the pipeline owns section headings.
+fn strip_heading_lines(md: &str) -> String {
+    md.lines()
+        .map(|l| l.trim_start_matches('#').trim_start())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// Claims worth showing a page-update prompt: those linking to the page, or
+/// mentioning an entity that matches its title. Falls back to all claims.
+fn relevant_claims(
+    linked: &[String],
+    ex: &Extraction,
+    resolver: &LinkResolver,
+    meta: &NoteMeta,
+) -> Vec<String> {
+    let title = meta.title.to_lowercase();
+    let picked: Vec<String> = linked
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| {
+            links_to(c, resolver, "sources", &meta.id)
+                || ex.key_claims.get(*i).is_some_and(|claim| {
+                    claim.entities.iter().any(|e| {
+                        let e = e.to_lowercase();
+                        e == title || title.contains(&e) || e.contains(&title)
+                    })
+                })
+        })
+        .map(|(_, c)| c.clone())
+        .collect();
+    if picked.is_empty() {
+        linked.to_vec()
+    } else {
+        picked
     }
 }
 

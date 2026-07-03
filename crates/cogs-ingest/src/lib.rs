@@ -12,6 +12,7 @@
 //! own ingest history becomes the SFT dataset for a small local model
 //! (`cogs distill`).
 
+pub mod fm_edit;
 pub mod git;
 mod pipeline;
 pub mod prompts;
@@ -79,8 +80,59 @@ pub struct EntityMention {
     pub blurb: String,
 }
 
+/// Weave-stage output: claims with wikilinks woven in, plus what to create
+/// and update.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkPlan {
+    /// The input claims, same order, verbatim apart from inserted `[[...]]`
+    /// brackets (enforced in Rust — a rewritten claim reverts to the
+    /// original).
+    pub linked_claims: Vec<String>,
+    #[serde(default)]
+    pub new_pages: Vec<NewPageSpec>,
+    /// Existing note ids for the source page's `## Cross-references`.
+    #[serde(default)]
+    pub cross_references: Vec<String>,
+    /// Candidate ids whose pages should gain a section from these claims.
+    #[serde(default)]
+    pub update_targets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewPageSpec {
+    pub slug: String,
+    /// "entities" or "concepts".
+    pub dir: String,
+    pub title: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub blurb: String,
+}
+
+/// One proposed append-only section for an existing page. The heading is
+/// rendered in Rust; the model supplies only the body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageUpdate {
+    pub topic: String,
+    #[serde(default)]
+    pub section_md: String,
+    /// The model may decline: nothing genuinely new for this page.
+    #[serde(default = "default_true")]
+    pub relevant: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContradictionCheck {
+    #[serde(default)]
+    pub findings: Vec<ContradictionFinding>,
+}
+
 /// A confirmed conflict between an incoming claim and an existing page.
-/// Populated by the weave stage (milestone 2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContradictionFinding {
     pub page_id: String,
