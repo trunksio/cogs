@@ -445,12 +445,37 @@ impl<'a> Ingester<'a> {
         let params = prompts::extract_params(max_tokens);
         let chunks = chunk_body(&raw.body_text, CHUNK_CHARS);
         if chunks.len() == 1 {
-            return teacher.call(
+            let (ex, seq): (Extraction, u32) = teacher.call(
                 TaskKind::Extract,
                 json!({ "raw_path": raw_rel }),
                 &prompts::extract_messages(&raw.title, raw.url.as_deref(), chunks[0]),
                 &params,
-            );
+            )?;
+            // A parse-clean but flattened reply (claims only) bypasses the
+            // JSON retry — give the full schema one content-level retry,
+            // heated so greedy decoding can't just repeat itself.
+            if ex.summary.trim().is_empty() && !ex.key_claims.is_empty() {
+                warn!("extraction had claims but no summary — asking once more");
+                let mut msgs = prompts::extract_messages(&raw.title, raw.url.as_deref(), chunks[0]);
+                msgs.push(cogs_llm::Message::user(
+                    "Reply with the FULL JSON object containing every schema field \
+                     (title, summary, key_claims, quotes, entities, topics, \
+                     suggested_slug, tags, author, publisher) — not a bare list.",
+                ));
+                let mut heated = params.clone();
+                heated.temperature = 0.4;
+                if let Ok((ex2, seq2)) = teacher.call::<Extraction>(
+                    TaskKind::Extract,
+                    json!({ "raw_path": raw_rel, "content_retry": true }),
+                    &msgs,
+                    &heated,
+                ) {
+                    if !ex2.summary.trim().is_empty() && !ex2.key_claims.is_empty() {
+                        return Ok((ex2, seq2));
+                    }
+                }
+            }
+            return Ok((ex, seq));
         }
 
         info!(chunks = chunks.len(), "long capture: extracting per section, then merging");
@@ -500,9 +525,6 @@ impl<'a> Ingester<'a> {
         let mut warnings = Vec::new();
 
         ex.summary = ex.summary.trim().to_string();
-        if ex.summary.is_empty() {
-            bail!("extraction produced no summary — aborting (nothing usable to write)");
-        }
 
         // Claims: single-line, non-empty, deduped, capped.
         let mut seen = std::collections::HashSet::new();
@@ -519,6 +541,24 @@ impl<'a> Ingester<'a> {
                 ex.key_claims.len()
             ));
             ex.key_claims.truncate(MAX_CLAIMS);
+        }
+
+        // Last resort for a claims-only extraction that survived the content
+        // retry: a summary built from the (validated) claims beats failing
+        // the whole file. Flagged for review.
+        if ex.summary.is_empty() {
+            ex.summary = ex
+                .key_claims
+                .iter()
+                .take(3)
+                .map(|c| c.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            warnings.push(
+                "model never produced a summary — synthesized one from the top claims \
+                 (review it)"
+                    .into(),
+            );
         }
 
         // Quotes must be verbatim (whitespace-tolerant) substrings of the raw
