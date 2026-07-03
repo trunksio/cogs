@@ -39,11 +39,11 @@ pub struct Extraction {
     pub title: Option<String>,
     /// 2-5 sentences, the source page's `## Summary`.
     pub summary: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_claims")]
     pub key_claims: Vec<Claim>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_quotes")]
     pub quotes: Vec<Quote>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_entities")]
     pub entities: Vec<EntityMention>,
     /// Concept-level candidates (things worth wiki pages).
     #[serde(default)]
@@ -87,6 +87,159 @@ pub struct EntityMention {
     pub blurb: String,
 }
 
+// Local models under json mode routinely flatten structure: object lists
+// become plain strings ("entities": ["Apache Airflow"]) and whole arrays
+// become one newline/numbered blob ("linked_claims": "1. …\n2. …"). Accept
+// those shapes on the way in; serialization (training targets) stays
+// canonical.
+
+/// Strip a leading "- ", "3. " or "3) " list marker.
+fn strip_list_marker(line: &str) -> &str {
+    let t = line.trim();
+    if let Some(r) = t.strip_prefix("- ") {
+        return r.trim();
+    }
+    let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0 {
+        let rest = &t[digits..];
+        if let Some(r) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
+            return r.trim();
+        }
+    }
+    t
+}
+
+/// Split a blob the model should have returned as an array: one item per
+/// non-empty line, list markers stripped.
+fn split_listish(s: &str) -> Vec<String> {
+    s.lines()
+        .map(strip_list_marker)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A list that may arrive as a proper array or as one string blob.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ListOrBlob<T> {
+    List(Vec<T>),
+    Blob(String),
+}
+
+fn de_string_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    Ok(match ListOrBlob::<String>::deserialize(d)? {
+        ListOrBlob::List(v) => v,
+        ListOrBlob::Blob(s) => split_listish(&s),
+    })
+}
+
+fn de_claims<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Claim>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum X {
+        Full(Claim),
+        Text(String),
+    }
+    let items = match ListOrBlob::<X>::deserialize(d)? {
+        ListOrBlob::List(v) => v,
+        ListOrBlob::Blob(s) => split_listish(&s).into_iter().map(X::Text).collect(),
+    };
+    Ok(items
+        .into_iter()
+        .map(|x| match x {
+            X::Full(c) => c,
+            X::Text(text) => Claim { text: strip_list_marker(&text).to_string(), entities: vec![] },
+        })
+        .collect())
+}
+
+fn de_quotes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Quote>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum X {
+        Full(Quote),
+        Text(String),
+    }
+    let items = match ListOrBlob::<X>::deserialize(d)? {
+        ListOrBlob::List(v) => v,
+        ListOrBlob::Blob(s) => split_listish(&s).into_iter().map(X::Text).collect(),
+    };
+    Ok(items
+        .into_iter()
+        .map(|x| match x {
+            X::Full(q) => q,
+            X::Text(text) => Quote { text, location: String::new() },
+        })
+        .collect())
+}
+
+fn de_entities<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<EntityMention>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum X {
+        Full(EntityMention),
+        Name(String),
+    }
+    let items = match ListOrBlob::<X>::deserialize(d)? {
+        ListOrBlob::List(v) => v,
+        ListOrBlob::Blob(s) => split_listish(&s).into_iter().map(X::Name).collect(),
+    };
+    Ok(items
+        .into_iter()
+        .map(|x| match x {
+            X::Full(e) => e,
+            X::Name(name) => {
+                EntityMention { name, kind: "entity".into(), blurb: String::new() }
+            }
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extraction_tolerates_flattened_lists() {
+        let ex: Extraction = serde_json::from_str(
+            r#"{"summary": "s",
+                "key_claims": ["plain claim", {"text": "full claim", "entities": ["E"]}],
+                "quotes": ["just text"],
+                "entities": ["Apache Airflow", {"name": "A2A", "kind": "concept", "blurb": "b"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(ex.key_claims[0].text, "plain claim");
+        assert_eq!(ex.key_claims[1].entities, vec!["E"]);
+        assert_eq!(ex.quotes[0].text, "just text");
+        assert_eq!(ex.entities[0].name, "Apache Airflow");
+        assert_eq!(ex.entities[0].kind, "entity");
+        assert_eq!(ex.entities[1].kind, "concept");
+    }
+
+    #[test]
+    fn blob_lists_split_into_items() {
+        let ex: Extraction = serde_json::from_str(
+            r#"{"summary": "s",
+                "key_claims": "1. First claim here.\n2. Second claim.",
+                "entities": "- Apache Airflow\n- A2A"}"#,
+        )
+        .unwrap();
+        assert_eq!(ex.key_claims.len(), 2);
+        assert_eq!(ex.key_claims[0].text, "First claim here.");
+        assert_eq!(ex.entities[1].name, "A2A");
+
+        let plan: LinkPlan = serde_json::from_str(
+            r#"{"linked_claims": "1. Anthropic revised its [[terms]].\n2. Second.",
+                "update_targets": "concepts/x"}"#,
+        )
+        .unwrap();
+        assert_eq!(plan.linked_claims.len(), 2);
+        assert_eq!(plan.linked_claims[0], "Anthropic revised its [[terms]].");
+        assert_eq!(plan.update_targets, vec!["concepts/x"]);
+    }
+}
+
 /// Weave-stage output: claims with wikilinks woven in, plus what to create
 /// and update.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,14 +247,15 @@ pub struct LinkPlan {
     /// The input claims, same order, verbatim apart from inserted `[[...]]`
     /// brackets (enforced in Rust — a rewritten claim reverts to the
     /// original).
+    #[serde(default, deserialize_with = "de_string_list")]
     pub linked_claims: Vec<String>,
     #[serde(default)]
     pub new_pages: Vec<NewPageSpec>,
     /// Existing note ids for the source page's `## Cross-references`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_list")]
     pub cross_references: Vec<String>,
     /// Candidate ids whose pages should gain a section from these claims.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_list")]
     pub update_targets: Vec<String>,
 }
 
