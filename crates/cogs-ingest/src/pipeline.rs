@@ -468,13 +468,20 @@ impl<'a> Ingester<'a> {
         }
         // Merging is mechanical — when the teacher can't produce a usable
         // merged extraction, do it deterministically instead of failing.
+        // NB: a degenerate reply can slip through serde via positional
+        // struct-from-sequence deserialization, so gate on the CONTENT
+        // (summary + claims present), not on parse success.
         match teacher.call::<Extraction>(
             TaskKind::ExtractMerge,
             json!({ "raw_path": raw_rel, "parts": parts.len() }),
             &prompts::merge_messages(&part_jsons),
             &params,
         ) {
-            Ok((merged, seq)) if !merged.summary.trim().is_empty() => Ok((merged, seq)),
+            Ok((merged, seq))
+                if !merged.summary.trim().is_empty() && !merged.key_claims.is_empty() =>
+            {
+                Ok((merged, seq))
+            }
             Ok(_) | Err(_) => {
                 warn!("teacher merge unusable — merging chunk extractions in Rust");
                 Ok((rust_merge(parts), 0))
