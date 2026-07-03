@@ -454,7 +454,8 @@ impl<'a> Ingester<'a> {
         }
 
         info!(chunks = chunks.len(), "long capture: extracting per section, then merging");
-        let mut parts = Vec::new();
+        let mut parts: Vec<Extraction> = Vec::new();
+        let mut part_jsons = Vec::new();
         for (i, chunk) in chunks.iter().enumerate() {
             let (part, _seq): (Extraction, u32) = teacher.call(
                 TaskKind::ExtractChunk,
@@ -462,14 +463,23 @@ impl<'a> Ingester<'a> {
                 &prompts::extract_messages(&raw.title, raw.url.as_deref(), chunk),
                 &params,
             )?;
-            parts.push(serde_json::to_string(&part)?);
+            part_jsons.push(serde_json::to_string(&part)?);
+            parts.push(part);
         }
-        teacher.call(
+        // Merging is mechanical — when the teacher can't produce a usable
+        // merged extraction, do it deterministically instead of failing.
+        match teacher.call::<Extraction>(
             TaskKind::ExtractMerge,
             json!({ "raw_path": raw_rel, "parts": parts.len() }),
-            &prompts::merge_messages(&parts),
+            &prompts::merge_messages(&part_jsons),
             &params,
-        )
+        ) {
+            Ok((merged, seq)) if !merged.summary.trim().is_empty() => Ok((merged, seq)),
+            Ok(_) | Err(_) => {
+                warn!("teacher merge unusable — merging chunk extractions in Rust");
+                Ok((rust_merge(parts), 0))
+            }
+        }
     }
 
     /// Enforce the hard rules on model output. Fails only when unsalvageable
@@ -1125,6 +1135,71 @@ fn chunk_body(body: &str, cap: usize) -> Vec<&str> {
     chunks
 }
 
+/// Deterministic union of per-chunk extractions — the fallback when the
+/// teacher's merge reply is unusable. Dedupes case-insensitively, keeps
+/// document order, takes the first non-empty scalar. validate_extraction
+/// applies the caps afterwards.
+fn rust_merge(parts: Vec<Extraction>) -> Extraction {
+    let mut out = Extraction {
+        title: None,
+        summary: String::new(),
+        key_claims: vec![],
+        quotes: vec![],
+        entities: vec![],
+        topics: vec![],
+        suggested_slug: String::new(),
+        tags: vec![],
+        author: None,
+        publisher: None,
+    };
+    let mut summaries: Vec<String> = Vec::new();
+    let mut seen_claim = std::collections::HashSet::new();
+    let mut seen_quote = std::collections::HashSet::new();
+    let mut seen_entity = std::collections::HashSet::new();
+    let mut seen_word = std::collections::HashSet::new();
+    for p in parts {
+        if !p.summary.trim().is_empty() {
+            summaries.push(p.summary.trim().to_string());
+        }
+        for c in p.key_claims {
+            if seen_claim.insert(c.text.trim().to_lowercase()) {
+                out.key_claims.push(c);
+            }
+        }
+        for q in p.quotes {
+            if seen_quote.insert(q.text.trim().to_lowercase()) {
+                out.quotes.push(q);
+            }
+        }
+        for e in p.entities {
+            if seen_entity.insert(e.name.trim().to_lowercase()) {
+                out.entities.push(e);
+            }
+        }
+        for t in p.topics.into_iter().chain(p.tags) {
+            let key = t.trim().to_lowercase();
+            if !key.is_empty() && seen_word.insert(key.clone()) {
+                out.topics.push(key.clone());
+                out.tags.push(key);
+            }
+        }
+        if out.title.is_none() {
+            out.title = p.title.filter(|t| !t.trim().is_empty());
+        }
+        if out.suggested_slug.is_empty() {
+            out.suggested_slug = p.suggested_slug;
+        }
+        if out.author.is_none() {
+            out.author = p.author.filter(|a| !a.trim().is_empty());
+        }
+        if out.publisher.is_none() {
+            out.publisher = p.publisher.filter(|a| !a.trim().is_empty());
+        }
+    }
+    out.summary = summaries.join(" ");
+    out
+}
+
 /// Fallback slug from the raw filename: strip the date prefix and extension,
 /// squash anything non-slug.
 fn slug_from_filename(rel_path: &str) -> String {
@@ -1183,6 +1258,32 @@ mod tests {
         let chunks = chunk_body(&body, 100);
         assert!(chunks.iter().all(|c| c.len() <= 100));
         assert_eq!(chunks.concat(), body);
+    }
+
+    #[test]
+    fn rust_merge_unions_and_dedupes() {
+        let p = |summary: &str, claim: &str, tag: &str| Extraction {
+            title: None,
+            summary: summary.into(),
+            key_claims: vec![crate::Claim { text: claim.into(), entities: vec![] }],
+            quotes: vec![],
+            entities: vec![crate::EntityMention {
+                name: "A2A".into(),
+                kind: "entity".into(),
+                blurb: String::new(),
+            }],
+            topics: vec![tag.into()],
+            suggested_slug: "slug-a".into(),
+            tags: vec![],
+            author: None,
+            publisher: None,
+        };
+        let m = rust_merge(vec![p("First part.", "Claim one.", "Tag"), p("Second.", "claim ONE.", "tag")]);
+        assert_eq!(m.summary, "First part. Second.");
+        assert_eq!(m.key_claims.len(), 1);
+        assert_eq!(m.entities.len(), 1);
+        assert_eq!(m.tags, vec!["tag"]);
+        assert_eq!(m.suggested_slug, "slug-a");
     }
 
     #[test]

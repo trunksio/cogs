@@ -37,7 +37,10 @@ pub struct Extraction {
     /// own frontmatter yields none (filename fallback).
     #[serde(default)]
     pub title: Option<String>,
-    /// 2-5 sentences, the source page's `## Summary`.
+    /// 2-5 sentences, the source page's `## Summary`. Deserialization is
+    /// lenient (chunk/merge partials may omit it); the pipeline still fails
+    /// an ingest whose FINAL extraction has no summary.
+    #[serde(default)]
     pub summary: String,
     #[serde(default, deserialize_with = "de_claims")]
     pub key_claims: Vec<Claim>,
