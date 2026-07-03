@@ -260,6 +260,18 @@ impl<'a> Ingester<'a> {
             ));
         }
 
+        // A raw capture without its own title parses to the filename — use
+        // the model's clean title in that case (e.g. clips whose frontmatter
+        // has source_title instead of title).
+        let mut raw = raw;
+        if Some(raw.title.as_str()) == raw_rel.rsplit('/').next() {
+            if let Some(t) =
+                extraction.title.as_deref().map(str::trim).filter(|t| !t.is_empty())
+            {
+                raw.title = t.to_string();
+            }
+        }
+
         // ---- stage 3: weave (links, page updates, contradictions) ---------
         let mut extraction = extraction;
         let weave = self.weave(

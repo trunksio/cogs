@@ -12,6 +12,8 @@ pub const EXTRACT_SYSTEM: &str = "\
 You are the ingest engine for a Karpathy-style wiki (immutable raw captures \
 distilled into a curated, wikilinked synthesis layer). Given one raw captured \
 document, extract:\n\
+- title: a clean human title for the document (its own title if it has one — \
+never a filename).\n\
 - summary: 2-5 sentences, in your own words, dense and factual.\n\
 - key_claims: 3-12 standalone, independently citable factual statements. Each \
 must be understandable without the others and without the document. List the \
@@ -26,7 +28,7 @@ one-sentence blurb for each.\n\
 - suggested_slug: a short kebab-case filename slug for the source page.\n\
 - tags: 2-6 lowercase topic tags.\n\
 - author / publisher: from the document if evident, else null.\n\
-Reply ONLY as JSON: {\"summary\": \"...\", \"key_claims\": [{\"text\": \"...\", \
+Reply ONLY as JSON: {\"title\": \"...\", \"summary\": \"...\", \"key_claims\": [{\"text\": \"...\", \
 \"entities\": [\"...\"]}], \"quotes\": [{\"text\": \"...\", \"location\": \
 \"...\"}], \"entities\": [{\"name\": \"...\", \"kind\": \"entity|concept\", \
 \"blurb\": \"...\"}], \"topics\": [\"...\"], \"suggested_slug\": \"kebab-case\", \

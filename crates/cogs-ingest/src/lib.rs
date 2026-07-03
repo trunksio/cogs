@@ -33,6 +33,10 @@ pub use retrieve::NearDuplicate;
 /// Stage-1 output: everything extracted from one raw capture.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Extraction {
+    /// Clean human title for the source page — used when the raw capture's
+    /// own frontmatter yields none (filename fallback).
+    #[serde(default)]
+    pub title: Option<String>,
     /// 2-5 sentences, the source page's `## Summary`.
     pub summary: String,
     #[serde(default)]

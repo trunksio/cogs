@@ -381,6 +381,7 @@ fn reconstruct(
     let tags = fm_list("tags");
     Some(Reconstruction {
         extraction: Extraction {
+            title: fm_str("title"),
             summary,
             key_claims,
             quotes,
