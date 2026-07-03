@@ -81,8 +81,10 @@ pub fn complete_json<T: serde::de::DeserializeOwned>(
 }
 
 /// Find the first balanced JSON object or array in a string (handles fenced
-/// or prose-wrapped replies). Returns the slice, not a parsed value.
-fn extract_json(s: &str) -> Option<&str> {
+/// or prose-wrapped replies). Returns the slice, not a parsed value. Public so
+/// callers that need the raw reply (e.g. ingest training capture) can complete
+/// and parse in two steps.
+pub fn extract_json(s: &str) -> Option<&str> {
     let bytes = s.as_bytes();
     let start = bytes.iter().position(|&b| b == b'{' || b == b'[')?;
     let open = bytes[start];

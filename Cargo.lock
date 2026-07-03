@@ -429,6 +429,7 @@ dependencies = [
  "cogs-ask",
  "cogs-core",
  "cogs-graph",
+ "cogs-ingest",
  "cogs-llm",
  "cogs-lsp",
  "cogs-server",
@@ -489,6 +490,23 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "time",
+ "tracing",
+]
+
+[[package]]
+name = "cogs-ingest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "cogs-ask",
+ "cogs-core",
+ "cogs-graph",
+ "cogs-llm",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tracing",
 ]
 

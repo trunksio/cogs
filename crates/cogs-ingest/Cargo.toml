@@ -1,0 +1,21 @@
+[package]
+name = "cogs-ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LLM-driven ingest of raw captures into a cogs wiki, with training-pair capture"
+
+[dependencies]
+cogs-core = { path = "../cogs-core" }
+cogs-graph = { path = "../cogs-graph" }
+cogs-llm = { path = "../cogs-llm" }
+cogs-ask = { path = "../cogs-ask" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+regex.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

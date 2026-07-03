@@ -60,6 +60,30 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Ingest a raw capture: LLM-drafted source page + wiki updates, written
+    /// to the working tree for review via git diff
+    Ingest {
+        /// Raw file to ingest (vault-relative like raw/clips/x.md, or absolute)
+        raw_file: PathBuf,
+        /// Proceed even if the note tree has uncommitted changes
+        #[arg(long)]
+        force: bool,
+        /// Print the planned writes (full content) without touching anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the ingest report as JSON
+        #[arg(long)]
+        json: bool,
+        /// Skip writing training-pair records
+        #[arg(long)]
+        no_training_capture: bool,
+        /// Max existing pages to draft updates for
+        #[arg(long, default_value_t = 8)]
+        pages_cap: usize,
+        /// Training-record directory (default <state-dir>/training)
+        #[arg(long)]
+        training_dir: Option<PathBuf>,
+    },
     /// Run the LSP server on stdio (launched by editors)
     Lsp,
     /// Run the MCP server on stdio (for AI agents)
@@ -100,6 +124,27 @@ fn main() -> Result<()> {
         Command::Status => status(&cli),
         Command::Query { cypher } => query(&cli, cypher),
         Command::Ask { question, json } => ask(&cli, question, *json),
+        Command::Ingest {
+            raw_file,
+            force,
+            dry_run,
+            json,
+            no_training_capture,
+            pages_cap,
+            training_dir,
+        } => ingest(
+            &cli,
+            raw_file,
+            cogs_ingest::IngestOptions {
+                force: *force,
+                dry_run: *dry_run,
+                pages_cap: *pages_cap,
+                capture: !no_training_capture,
+                training_dir: training_dir.clone(),
+                ..Default::default()
+            },
+            *json,
+        ),
         Command::Lsp => {
             let vault_override = cli.vault.clone();
             tokio::runtime::Builder::new_multi_thread()
@@ -344,6 +389,91 @@ fn ask(cli: &Cli, question: &str, as_json: bool) -> Result<()> {
             println!("  [{}] {}", c.id, c.title);
         }
     }
+    Ok(())
+}
+
+fn ingest(cli: &Cli, raw_file: &PathBuf, opts: cogs_ingest::IngestOptions, as_json: bool) -> Result<()> {
+    let vault = open_vault(cli)?;
+    let chat = cogs_llm::make_provider(&vault.config.llm)
+        .context("building the LLM provider (check [llm] in cogs.toml)")?;
+    let embed = if vault.config.embeddings.enabled {
+        cogs_graph::make_provider(&vault.config.embeddings)
+            .map_err(|e| tracing::warn!("semantic retrieval disabled: {e:#}"))
+            .ok()
+    } else {
+        None
+    };
+
+    // Freshen the index if we can win the writer; a running cogs process
+    // (LSP/MCP primary) keeps it fresh otherwise, so read-only is fine.
+    let db = match GraphDb::open_rw(&vault, false) {
+        Ok(db) => {
+            if let Err(e) = SyncEngine::new(&vault)?.sync_with(&db, false, embed.as_deref()) {
+                tracing::warn!("pre-ingest sync failed: {e:#}");
+            }
+            db
+        }
+        Err(e) => {
+            tracing::info!("graph writer busy ({e:#}); continuing read-only");
+            GraphDb::open_ro(&vault)
+                .context("opening graph db (run `cogs sync` first if it doesn't exist)")?
+        }
+    };
+
+    let dry_run = opts.dry_run;
+    let ingester = cogs_ingest::Ingester::new(&vault, &db, chat.as_ref(), embed.as_deref(), opts);
+    let report = ingester.ingest(raw_file)?;
+
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    if let Some(existing) = &report.already_ingested {
+        println!("already ingested — source page: {existing}");
+        return Ok(());
+    }
+    for w in &report.warnings {
+        eprintln!("⚠ {w}");
+    }
+    if !report.near_duplicates.is_empty() {
+        eprintln!("⚠ possible duplicates:");
+        for d in &report.near_duplicates {
+            eprintln!("    {} ({}, {:.2})", d.id, d.via, d.score);
+        }
+    }
+    if dry_run {
+        for p in &report.planned {
+            println!("--- {} ({}) ---", p.rel_path, p.action);
+            println!("{}", p.content);
+        }
+        println!("dry run: nothing written");
+        return Ok(());
+    }
+    println!(
+        "ingested {} → {}",
+        report.raw_path,
+        report.source_page.as_deref().unwrap_or("?")
+    );
+    if !report.pages_updated.is_empty() {
+        println!("pages updated: {}", report.pages_updated.join(", "));
+    }
+    if !report.pages_created.is_empty() {
+        println!("pages created: {}", report.pages_created.join(", "));
+    }
+    if !report.contradictions.is_empty() {
+        println!("⚠ contradictions flagged:");
+        for c in &report.contradictions {
+            println!("    {} — {}", c.page_id, c.explanation);
+        }
+    }
+    if report.training_records > 0 {
+        println!("training records captured: {} (run {})", report.training_records, report.run_id);
+    }
+    if !report.synced {
+        println!("note: graph not re-synced here (a running cogs process will, or run `cogs sync`)");
+    }
+    println!("review with: git diff");
     Ok(())
 }
 

@@ -11,7 +11,9 @@ pub const FTS_INDEX: &str = "note_fts";
 /// even with embeddings off (stays NULL) so enabling them later only changes
 /// the config hash when `dim` changes.
 pub fn ddl(cfg: &VaultConfig) -> Vec<String> {
-    let dim = cfg.embeddings.dim;
+    // dim = 0 (embeddings unconfigured, e.g. the karpathy scaffold) must
+    // still produce a valid column type — FLOAT[0] is a binder error.
+    let dim = cfg.embeddings.dim.max(1);
     let mut stmts = vec![
         format!(
             "CREATE NODE TABLE IF NOT EXISTS Note (
