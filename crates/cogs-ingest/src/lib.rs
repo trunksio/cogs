@@ -122,19 +122,37 @@ fn split_listish(s: &str) -> Vec<String> {
         .collect()
 }
 
-/// A list that may arrive as a proper array or as one string blob.
+/// A list that may arrive as a proper array, a keyed map ({"1": …}), or one
+/// string blob.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ListOrBlob<T> {
     List(Vec<T>),
+    Map(std::collections::BTreeMap<String, T>),
     Blob(String),
 }
 
+impl<T> ListOrBlob<T> {
+    /// Normalize to a Vec; map keys sort numerically when they are numbers
+    /// ("10" after "2"), lexically otherwise. Blobs go through `f`.
+    fn into_vec(self, f: impl Fn(String) -> T) -> Vec<T> {
+        match self {
+            ListOrBlob::List(v) => v,
+            ListOrBlob::Map(m) => {
+                let mut entries: Vec<(String, T)> = m.into_iter().collect();
+                entries.sort_by(|(a, _), (b, _)| match (a.parse::<u64>(), b.parse::<u64>()) {
+                    (Ok(x), Ok(y)) => x.cmp(&y),
+                    _ => a.cmp(b),
+                });
+                entries.into_iter().map(|(_, v)| v).collect()
+            }
+            ListOrBlob::Blob(s) => split_listish(&s).into_iter().map(f).collect(),
+        }
+    }
+}
+
 fn de_string_list<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
-    Ok(match ListOrBlob::<String>::deserialize(d)? {
-        ListOrBlob::List(v) => v,
-        ListOrBlob::Blob(s) => split_listish(&s),
-    })
+    Ok(ListOrBlob::<String>::deserialize(d)?.into_vec(|s| s))
 }
 
 fn de_claims<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Claim>, D::Error> {
@@ -144,11 +162,8 @@ fn de_claims<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Claim>, D::Er
         Full(Claim),
         Text(String),
     }
-    let items = match ListOrBlob::<X>::deserialize(d)? {
-        ListOrBlob::List(v) => v,
-        ListOrBlob::Blob(s) => split_listish(&s).into_iter().map(X::Text).collect(),
-    };
-    Ok(items
+    Ok(ListOrBlob::<X>::deserialize(d)?
+        .into_vec(X::Text)
         .into_iter()
         .map(|x| match x {
             X::Full(c) => c,
@@ -164,11 +179,8 @@ fn de_quotes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Quote>, D::Er
         Full(Quote),
         Text(String),
     }
-    let items = match ListOrBlob::<X>::deserialize(d)? {
-        ListOrBlob::List(v) => v,
-        ListOrBlob::Blob(s) => split_listish(&s).into_iter().map(X::Text).collect(),
-    };
-    Ok(items
+    Ok(ListOrBlob::<X>::deserialize(d)?
+        .into_vec(X::Text)
         .into_iter()
         .map(|x| match x {
             X::Full(q) => q,
@@ -184,11 +196,8 @@ fn de_entities<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<EntityMenti
         Full(EntityMention),
         Name(String),
     }
-    let items = match ListOrBlob::<X>::deserialize(d)? {
-        ListOrBlob::List(v) => v,
-        ListOrBlob::Blob(s) => split_listish(&s).into_iter().map(X::Name).collect(),
-    };
-    Ok(items
+    Ok(ListOrBlob::<X>::deserialize(d)?
+        .into_vec(X::Name)
         .into_iter()
         .map(|x| match x {
             X::Full(e) => e,
@@ -240,6 +249,19 @@ mod tests {
         assert_eq!(plan.linked_claims.len(), 2);
         assert_eq!(plan.linked_claims[0], "Anthropic revised its [[terms]].");
         assert_eq!(plan.update_targets, vec!["concepts/x"]);
+    }
+
+    #[test]
+    fn map_shaped_lists_normalize_in_numeric_order() {
+        let ex: Extraction = serde_json::from_str(
+            r#"{"summary": "s",
+                "key_claims": {"1": "first", "2": {"text": "second", "entities": []}, "10": "tenth"},
+                "entities": {"a": "Airflow"}}"#,
+        )
+        .unwrap();
+        let texts: Vec<&str> = ex.key_claims.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(texts, vec!["first", "second", "tenth"]);
+        assert_eq!(ex.entities[0].name, "Airflow");
     }
 }
 
