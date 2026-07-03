@@ -76,10 +76,12 @@ impl<'de> Deserialize<'de> for Extraction {
             publisher: Option<String>,
         }
         #[derive(Deserialize)]
+        struct ClaimsField(#[serde(deserialize_with = "de_claims")] Vec<Claim>);
+        #[derive(Deserialize)]
         #[serde(untagged)]
         enum Wire {
             Obj(Obj),
-            Claims(Vec<Claim>),
+            Claims(ClaimsField),
         }
         Ok(match Wire::deserialize(d)? {
             Wire::Obj(o) => Extraction {
@@ -94,7 +96,7 @@ impl<'de> Deserialize<'de> for Extraction {
                 author: o.author,
                 publisher: o.publisher,
             },
-            Wire::Claims(key_claims) => Extraction {
+            Wire::Claims(ClaimsField(key_claims)) => Extraction {
                 title: None,
                 summary: String::new(),
                 key_claims,

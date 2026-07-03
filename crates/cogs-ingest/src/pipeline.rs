@@ -526,11 +526,19 @@ impl<'a> Ingester<'a> {
 
         ex.summary = ex.summary.trim().to_string();
 
-        // Claims: single-line, non-empty, deduped, capped.
+        // Claims: single-line, non-trivial, deduped, capped. The length gate
+        // drops structural junk that tolerant parsing can let through
+        // ("text", "quotes:[{", …) — no real claim is under 15 chars.
         let mut seen = std::collections::HashSet::new();
         ex.key_claims.retain_mut(|c| {
             c.text = c.text.split_whitespace().collect::<Vec<_>>().join(" ");
-            !c.text.is_empty() && seen.insert(c.text.to_lowercase())
+            if c.text.len() < 15 {
+                if !c.text.is_empty() {
+                    warnings.push(format!("dropped junk claim {:?}", c.text));
+                }
+                return false;
+            }
+            seen.insert(c.text.to_lowercase())
         });
         if ex.key_claims.is_empty() {
             bail!("extraction produced no key claims — aborting");
