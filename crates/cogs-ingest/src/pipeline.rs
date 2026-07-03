@@ -604,12 +604,28 @@ impl<'a> Ingester<'a> {
             .collect();
 
         // ---- teacher call: link plan ---------------------------------------
-        let (plan, plan_seq): (LinkPlan, u32) = teacher.call(
+        // Weave stages degrade rather than abort: an unusable reply here
+        // costs links, not the ingest.
+        let (plan, plan_seq): (LinkPlan, u32) = match teacher.call(
             TaskKind::SuggestLinks,
             json!({ "raw_path": raw_rel }),
             &prompts::suggest_links_messages(&plain_claims, &candidate_lines, &source_slug),
             &prompts::extract_params(self.vault.config.llm.max_tokens),
-        )?;
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                warnings.push(format!("link weaving skipped (unusable model reply): {e:#}"));
+                (
+                    LinkPlan {
+                        linked_claims: plain_claims.clone(),
+                        new_pages: vec![],
+                        cross_references: vec![],
+                        update_targets: vec![],
+                    },
+                    0,
+                )
+            }
+        };
 
         // ---- validate: new pages -------------------------------------------
         let slug_re = regex::Regex::new(r"^[a-z0-9][a-z0-9-]{1,60}$").unwrap();
@@ -748,7 +764,7 @@ impl<'a> Ingester<'a> {
             };
             let (_, _, page_body, _) = split_frontmatter(&file_text);
             let claims_for = relevant_claims(&linked, ex, &resolver, meta);
-            let (upd, seq): (PageUpdate, u32) = teacher.call(
+            let (upd, seq): (PageUpdate, u32) = match teacher.call(
                 TaskKind::PageUpdate,
                 json!({ "raw_path": raw_rel, "page_id": target }),
                 &prompts::page_update_messages(
@@ -760,7 +776,13 @@ impl<'a> Ingester<'a> {
                     &source_slug,
                 ),
                 &prompts::weave_params(),
-            )?;
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    warnings.push(format!("update for {target} skipped: {e:#}"));
+                    continue;
+                }
+            };
             if !upd.relevant || upd.section_md.trim().is_empty() {
                 info!("no genuinely new material for {target}");
                 continue;
@@ -821,7 +843,7 @@ impl<'a> Ingester<'a> {
                 continue;
             };
             let (_, _, page_body, _) = split_frontmatter(&file_text);
-            let (check, _seq): (ContradictionCheck, u32) = teacher.call(
+            let (check, _seq): (ContradictionCheck, u32) = match teacher.call(
                 TaskKind::Contradiction,
                 json!({ "raw_path": raw_rel, "page_id": pid }),
                 &prompts::contradiction_messages(
@@ -831,7 +853,13 @@ impl<'a> Ingester<'a> {
                     &plain_claims,
                 ),
                 &prompts::weave_params(),
-            )?;
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    warnings.push(format!("contradiction check for {pid} skipped: {e:#}"));
+                    continue;
+                }
+            };
             for f in check.findings {
                 if &f.page_id != pid {
                     warnings.push(format!(

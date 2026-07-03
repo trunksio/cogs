@@ -242,21 +242,55 @@ mod tests {
 
 /// Weave-stage output: claims with wikilinks woven in, plus what to create
 /// and update.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LinkPlan {
     /// The input claims, same order, verbatim apart from inserted `[[...]]`
     /// brackets (enforced in Rust — a rewritten claim reverts to the
     /// original).
-    #[serde(default, deserialize_with = "de_string_list")]
     pub linked_claims: Vec<String>,
-    #[serde(default)]
     pub new_pages: Vec<NewPageSpec>,
     /// Existing note ids for the source page's `## Cross-references`.
-    #[serde(default, deserialize_with = "de_string_list")]
     pub cross_references: Vec<String>,
     /// Candidate ids whose pages should gain a section from these claims.
-    #[serde(default, deserialize_with = "de_string_list")]
     pub update_targets: Vec<String>,
+}
+
+// Tolerates the whole plan arriving as a bare array of linked claims — a
+// shape local models actually produce.
+impl<'de> Deserialize<'de> for LinkPlan {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Obj {
+            #[serde(default, deserialize_with = "de_string_list")]
+            linked_claims: Vec<String>,
+            #[serde(default)]
+            new_pages: Vec<NewPageSpec>,
+            #[serde(default, deserialize_with = "de_string_list")]
+            cross_references: Vec<String>,
+            #[serde(default, deserialize_with = "de_string_list")]
+            update_targets: Vec<String>,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Obj(Obj),
+            Claims(Vec<String>),
+        }
+        Ok(match Wire::deserialize(d)? {
+            Wire::Obj(o) => LinkPlan {
+                linked_claims: o.linked_claims,
+                new_pages: o.new_pages,
+                cross_references: o.cross_references,
+                update_targets: o.update_targets,
+            },
+            Wire::Claims(linked_claims) => LinkPlan {
+                linked_claims,
+                new_pages: vec![],
+                cross_references: vec![],
+                update_targets: vec![],
+            },
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,10 +321,30 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ContradictionCheck {
-    #[serde(default)]
     pub findings: Vec<ContradictionFinding>,
+}
+
+// Tolerates a bare findings array (models often skip the wrapper object).
+impl<'de> Deserialize<'de> for ContradictionCheck {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Obj {
+            #[serde(default)]
+            findings: Vec<ContradictionFinding>,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Obj(Obj),
+            Bare(Vec<ContradictionFinding>),
+        }
+        Ok(match Wire::deserialize(d)? {
+            Wire::Obj(o) => ContradictionCheck { findings: o.findings },
+            Wire::Bare(findings) => ContradictionCheck { findings },
+        })
+    }
 }
 
 /// A confirmed conflict between an incoming claim and an existing page.
