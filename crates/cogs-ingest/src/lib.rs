@@ -31,35 +31,83 @@ pub use retrieve::NearDuplicate;
 // ---- typed model outputs (Serialize too: distill re-emits them as targets) --
 
 /// Stage-1 output: everything extracted from one raw capture.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Extraction {
     /// Clean human title for the source page — used when the raw capture's
     /// own frontmatter yields none (filename fallback).
-    #[serde(default)]
     pub title: Option<String>,
     /// 2-5 sentences, the source page's `## Summary`. Deserialization is
     /// lenient (chunk/merge partials may omit it); the pipeline still fails
     /// an ingest whose FINAL extraction has no summary.
-    #[serde(default)]
     pub summary: String,
-    #[serde(default, deserialize_with = "de_claims")]
     pub key_claims: Vec<Claim>,
-    #[serde(default, deserialize_with = "de_quotes")]
     pub quotes: Vec<Quote>,
-    #[serde(default, deserialize_with = "de_entities")]
     pub entities: Vec<EntityMention>,
     /// Concept-level candidates (things worth wiki pages).
-    #[serde(default)]
     pub topics: Vec<String>,
     /// kebab-case slug for the source page filename.
-    #[serde(default)]
     pub suggested_slug: String,
-    #[serde(default)]
     pub tags: Vec<String>,
-    #[serde(default)]
     pub author: Option<String>,
-    #[serde(default)]
     pub publisher: Option<String>,
+}
+
+// Tolerates the whole extraction arriving as a bare array of claims — the
+// teacher sometimes flattens the reply to just key_claims.
+impl<'de> Deserialize<'de> for Extraction {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct Obj {
+            title: Option<String>,
+            summary: String,
+            #[serde(deserialize_with = "de_claims")]
+            key_claims: Vec<Claim>,
+            #[serde(deserialize_with = "de_quotes")]
+            quotes: Vec<Quote>,
+            #[serde(deserialize_with = "de_entities")]
+            entities: Vec<EntityMention>,
+            #[serde(deserialize_with = "de_string_list")]
+            topics: Vec<String>,
+            suggested_slug: String,
+            #[serde(deserialize_with = "de_string_list")]
+            tags: Vec<String>,
+            author: Option<String>,
+            publisher: Option<String>,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Obj(Obj),
+            Claims(Vec<Claim>),
+        }
+        Ok(match Wire::deserialize(d)? {
+            Wire::Obj(o) => Extraction {
+                title: o.title,
+                summary: o.summary,
+                key_claims: o.key_claims,
+                quotes: o.quotes,
+                entities: o.entities,
+                topics: o.topics,
+                suggested_slug: o.suggested_slug,
+                tags: o.tags,
+                author: o.author,
+                publisher: o.publisher,
+            },
+            Wire::Claims(key_claims) => Extraction {
+                title: None,
+                summary: String::new(),
+                key_claims,
+                quotes: vec![],
+                entities: vec![],
+                topics: vec![],
+                suggested_slug: String::new(),
+                tags: vec![],
+                author: None,
+                publisher: None,
+            },
+        })
+    }
 }
 
 /// A standalone, independently citable factual statement. All fields are
@@ -254,6 +302,16 @@ mod tests {
         assert_eq!(plan.linked_claims.len(), 2);
         assert_eq!(plan.linked_claims[0], "Anthropic revised its [[terms]].");
         assert_eq!(plan.update_targets, vec!["concepts/x"]);
+    }
+
+    #[test]
+    fn extraction_tolerates_bare_claims_array() {
+        let ex: Extraction = serde_json::from_str(
+            r#"[{"text": "Groq's LPU uses on-chip SRAM.", "entities": ["Groq"]}]"#,
+        )
+        .unwrap();
+        assert_eq!(ex.key_claims.len(), 1);
+        assert!(ex.summary.is_empty()); // validation decides what to do with that
     }
 
     #[test]

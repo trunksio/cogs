@@ -196,6 +196,9 @@ impl<'a> Teacher<'a> {
                 Ok(v) => return Ok((v, seq)),
                 Err(e) if attempt == 0 => {
                     tracing::warn!("teacher reply unparseable, retrying once: {e:#}");
+                    // Greedy decoding is deterministic — an identical retry
+                    // would reproduce the identical broken reply. Add heat.
+                    params.temperature = params.temperature.max(0.4);
                     msgs.push(Message::assistant(raw));
                     msgs.push(Message::user(
                         "Your previous reply was not the required JSON. Reply again with \
