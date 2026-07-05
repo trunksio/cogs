@@ -19,7 +19,8 @@ use tracing::{debug, info};
 use cogs_core::config::Vault;
 use cogs_graph::embed::EmbeddingProvider;
 use cogs_graph::GraphDb;
-use cogs_llm::{complete_json, ChatProvider, CompletionParams, Message};
+use cogs_llm::training::{TaskKind, Teacher, TrainingRecorder};
+use cogs_llm::{ChatProvider, CompletionParams, Message};
 
 use query::{cypher_escape, cypher_id_list, hybrid_note_search};
 
@@ -79,6 +80,9 @@ pub struct Asker<'a> {
     chat: &'a dyn ChatProvider,
     /// Query embedder for semantic retrieval; None disables vector search.
     embed: Option<&'a dyn EmbeddingProvider>,
+    /// Optional training capture — decompose/synthesize calls get recorded
+    /// exactly like ingest teacher calls, for the ask-adapter dataset.
+    recorder: Option<&'a TrainingRecorder>,
     cfg: AskConfig,
 }
 
@@ -89,11 +93,16 @@ impl<'a> Asker<'a> {
         chat: &'a dyn ChatProvider,
         embed: Option<&'a dyn EmbeddingProvider>,
     ) -> Self {
-        Self { vault, db, chat, embed, cfg: AskConfig::default() }
+        Self { vault, db, chat, embed, recorder: None, cfg: AskConfig::default() }
     }
 
     pub fn with_config(mut self, cfg: AskConfig) -> Self {
         self.cfg = cfg;
+        self
+    }
+
+    pub fn with_recorder(mut self, recorder: &'a TrainingRecorder) -> Self {
+        self.recorder = Some(recorder);
         self
     }
 
@@ -183,8 +192,14 @@ impl<'a> Asker<'a> {
             Message::user(question),
         ];
         let params = CompletionParams { temperature: 0.0, max_tokens: 400, json: true };
-        match complete_json::<Decomp>(self.chat, &msgs, &params) {
-            Ok(d) if !d.subquestions.is_empty() => {
+        let teacher = Teacher::new(self.chat, self.recorder);
+        match teacher.call::<Decomp>(
+            TaskKind::Decompose,
+            serde_json::json!({ "question": question }),
+            &msgs,
+            &params,
+        ) {
+            Ok((d, _)) if !d.subquestions.is_empty() => {
                 let mut v = d.subquestions;
                 v.truncate(4);
                 Ok(v)
@@ -303,12 +318,16 @@ impl<'a> Asker<'a> {
             max_tokens: self.vault.config.llm.max_tokens,
             json: true,
         };
-        complete_json::<SynthOut>(
-            self.chat,
-            &[Message::system(system), Message::user(user)],
-            &params,
-        )
-        .context("synthesis step failed")
+        let teacher = Teacher::new(self.chat, self.recorder);
+        teacher
+            .call::<SynthOut>(
+                TaskKind::Synthesize,
+                serde_json::json!({ "question": question }),
+                &[Message::system(system), Message::user(user)],
+                &params,
+            )
+            .map(|(s, _)| s)
+            .context("synthesis step failed")
     }
 
     // ---- helpers ---------------------------------------------------------

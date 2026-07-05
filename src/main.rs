@@ -59,6 +59,13 @@ enum Command {
         /// Emit the full answer (citations, contradictions) as JSON
         #[arg(long)]
         json: bool,
+        /// Record the decompose/synthesize calls as training pairs (for the
+        /// ask-adapter dataset), plus the validated answer as acceptance
+        #[arg(long)]
+        capture_training: bool,
+        /// Training-record directory (default <state-dir>/training)
+        #[arg(long)]
+        training_dir: Option<PathBuf>,
     },
     /// Ingest a raw capture: LLM-drafted source page + wiki updates, written
     /// to the working tree for review via git diff
@@ -147,7 +154,9 @@ fn main() -> Result<()> {
         Command::Sync { full, with_embeddings } => sync(&cli, *full, *with_embeddings),
         Command::Status => status(&cli),
         Command::Query { cypher } => query(&cli, cypher),
-        Command::Ask { question, json } => ask(&cli, question, *json),
+        Command::Ask { question, json, capture_training, training_dir } => {
+            ask(&cli, question, *json, *capture_training, training_dir.clone())
+        }
         Command::Ingest {
             raw_file,
             force,
@@ -391,7 +400,13 @@ fn query(cli: &Cli, cypher: &str) -> Result<()> {
     Ok(())
 }
 
-fn ask(cli: &Cli, question: &str, as_json: bool) -> Result<()> {
+fn ask(
+    cli: &Cli,
+    question: &str,
+    as_json: bool,
+    capture: bool,
+    training_dir: Option<PathBuf>,
+) -> Result<()> {
     let mut vault = open_vault(cli)?;
     vault.config.llm = vault.config.llm.for_task("ask");
     let db = GraphDb::open_ro(&vault)
@@ -406,8 +421,37 @@ fn ask(cli: &Cli, question: &str, as_json: bool) -> Result<()> {
     } else {
         None
     };
-    let asker = cogs_ask::Asker::new(&vault, &db, chat.as_ref(), embed.as_deref());
+
+    let recorder = capture.then(|| {
+        let dir = training_dir.unwrap_or_else(|| vault.state_dir().join("training"));
+        let qhash = cogs_core::parse::sha256_hex(question);
+        let run_id = format!(
+            "{}-ask-{}",
+            chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
+            &qhash[..6]
+        );
+        (cogs_llm::training::TrainingRecorder::new(
+            dir.join("runs"),
+            &run_id,
+            chat.name(),
+            &vault.config.llm.model,
+        ), dir, run_id)
+    });
+
+    let mut asker = cogs_ask::Asker::new(&vault, &db, chat.as_ref(), embed.as_deref());
+    if let Some((rec, _, _)) = &recorder {
+        asker = asker.with_recorder(rec);
+    }
     let answer = asker.ask(question)?;
+
+    // The validated answer is the acceptance signal for the recorded calls:
+    // dataset builders keep synthesize pairs whose citations survived.
+    if let Some((_, dir, run_id)) = &recorder {
+        let path = dir.join("runs").join(format!("{run_id}.ask.json"));
+        if let Err(e) = std::fs::write(&path, serde_json::to_vec_pretty(&answer)?) {
+            tracing::warn!("could not write ask acceptance record: {e:#}");
+        }
+    }
 
     if as_json {
         println!("{}", serde_json::to_string_pretty(&answer)?);

@@ -20,7 +20,7 @@ pub mod prompts;
 mod render;
 mod retrieve;
 mod text;
-pub mod training;
+pub use cogs_llm::training;
 
 use serde::{Deserialize, Serialize};
 

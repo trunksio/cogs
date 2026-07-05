@@ -14,17 +14,21 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use cogs_llm::{extract_json, repair_truncated_json, ChatProvider, CompletionParams, Message};
+use crate::{extract_json, repair_truncated_json, ChatProvider, CompletionParams, Message};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
+    // ingest pipeline
     Extract,
     ExtractChunk,
     ExtractMerge,
     SuggestLinks,
     PageUpdate,
     Contradiction,
+    // ask pipeline
+    Decompose,
+    Synthesize,
 }
 
 /// One recorded teacher call.

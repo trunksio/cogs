@@ -10,6 +10,8 @@
 //! lands as another OpenAI-compatible endpoint (a managed local MLX server),
 //! so it slots in here without touching callers.
 
+pub mod training;
+
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
