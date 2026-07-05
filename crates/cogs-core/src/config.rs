@@ -264,6 +264,9 @@ pub struct LlmSection {
     pub api_key_env: String,
     /// Per-request cap; keeps local models bounded.
     pub max_tokens: u32,
+    /// HTTP timeout per completion. Local models generating long outputs
+    /// (chunked ingest extractions) can legitimately take minutes.
+    pub timeout_secs: u64,
 }
 
 impl Default for LlmSection {
@@ -274,6 +277,7 @@ impl Default for LlmSection {
             base_url: String::new(),
             api_key_env: String::new(),
             max_tokens: 2048,
+            timeout_secs: 300,
         }
     }
 }

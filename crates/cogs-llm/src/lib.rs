@@ -341,7 +341,7 @@ impl ChatProvider for AnthropicProvider {
 /// and reads API keys from the environment.
 pub fn make_provider(cfg: &LlmSection) -> Result<Box<dyn ChatProvider>> {
     let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(180))
+        .timeout(std::time::Duration::from_secs(cfg.timeout_secs.max(30)))
         .build()?;
 
     let env_key = |default_var: &str| -> Option<String> {
