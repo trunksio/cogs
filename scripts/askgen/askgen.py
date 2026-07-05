@@ -46,9 +46,13 @@ QUESTION_SYS = (
     '{"questions": ["..."]}'
 )
 PROBE_SYS = (
-    "You write plausible-sounding questions that are ADJACENT to the given "
-    "topics but NOT answerable from them (different subarea, invented "
-    "specifics, or out-of-domain). Reply ONLY as JSON: {\"questions\": [\"...\"]}"
+    "You write plausible-sounding questions that a knowledge base about the "
+    "given topics could NOT answer: each must hinge on a specific fact from "
+    "OUTSIDE the topic area — a different industry, a product/event/person "
+    "the topics would never cover, or precise figures (prices, dates, "
+    "versions) that no document about these topics would contain. Do not ask "
+    "about the topics themselves. Reply ONLY as JSON: "
+    '{"questions": ["..."]}'
 )
 
 
