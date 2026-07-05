@@ -454,13 +454,17 @@ impl VaultConfig {
 
     pub fn hash(&self) -> String {
         // Hash only schema-affecting config. Runtime-only sections (server
-        // port, llm backend) are reset to default first so changing them
-        // never triggers a graph-db rebuild. toml key-order noise is absorbed
-        // by serde_json's stable struct field order.
-        let mut schema_only = self.clone();
-        schema_only.server = ServerSection::default();
-        schema_only.llm = LlmSection::default();
-        let canonical = serde_json::to_string(&schema_only).expect("config serializes");
+        // port, llm backend) are REMOVED from the hashed JSON — not reset to
+        // defaults, which would still shift the hash whenever those structs
+        // gain fields (learned the hard way: adding [llm].timeout_secs
+        // rebuilt every vault). toml key-order noise is absorbed by
+        // serde_json's stable struct field order.
+        let mut v = serde_json::to_value(self).expect("config serializes");
+        if let Some(o) = v.as_object_mut() {
+            o.remove("llm");
+            o.remove("server");
+        }
+        let canonical = serde_json::to_string(&v).expect("config serializes");
         let mut h = Sha256::new();
         h.update(SCHEMA_VERSION.to_le_bytes());
         h.update(canonical.as_bytes());
@@ -552,5 +556,16 @@ mod tests {
         let mut cfg = VaultConfig::default();
         cfg.edges[0].name = "REFERS_TO".into();
         assert_ne!(a, cfg.hash());
+    }
+
+    #[test]
+    fn config_hash_ignores_llm_and_server_entirely() {
+        let a = VaultConfig::default().hash();
+        let mut cfg = VaultConfig::default();
+        cfg.llm.model = "some-other-model".into();
+        cfg.llm.timeout_secs = 999;
+        cfg.llm.extra_body = serde_json::json!({ "chat_template_kwargs": { "enable_thinking": false } });
+        cfg.server.port = 9999;
+        assert_eq!(a, cfg.hash(), "runtime-only sections must never affect the hash");
     }
 }
