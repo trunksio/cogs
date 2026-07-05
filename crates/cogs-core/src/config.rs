@@ -275,6 +275,68 @@ pub struct LlmSection {
     /// escape hatch, e.g. disabling Qwen thinking on omlx/vLLM:
     /// `[llm.extra_body.chat_template_kwargs] enable_thinking = false`.
     pub extra_body: serde_json::Value,
+    /// Per-task overlay for `cogs ask` — unset fields inherit from [llm].
+    /// Lets a QA-tuned model answer while an ingest-tuned one extracts.
+    pub ask: Option<LlmOverride>,
+    /// Per-task overlay for `cogs ingest`.
+    pub ingest: Option<LlmOverride>,
+}
+
+/// Partial [llm] override: every field optional, falling back to the base
+/// section. `[llm.ask] model = "..."` swaps just the model.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LlmOverride {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub base_url: Option<String>,
+    pub api_key_env: Option<String>,
+    pub max_tokens: Option<u32>,
+    pub timeout_secs: Option<u64>,
+    pub response_format: Option<bool>,
+    pub extra_body: Option<serde_json::Value>,
+}
+
+impl LlmSection {
+    /// The effective [llm] for a task ("ask" | "ingest"): the base section
+    /// with that task's overlay applied.
+    pub fn for_task(&self, task: &str) -> LlmSection {
+        let overlay = match task {
+            "ask" => self.ask.as_ref(),
+            "ingest" => self.ingest.as_ref(),
+            _ => None,
+        };
+        let mut out = self.clone();
+        out.ask = None;
+        out.ingest = None;
+        if let Some(o) = overlay {
+            if let Some(v) = &o.provider {
+                out.provider = v.clone();
+            }
+            if let Some(v) = &o.model {
+                out.model = v.clone();
+            }
+            if let Some(v) = &o.base_url {
+                out.base_url = v.clone();
+            }
+            if let Some(v) = &o.api_key_env {
+                out.api_key_env = v.clone();
+            }
+            if let Some(v) = o.max_tokens {
+                out.max_tokens = v;
+            }
+            if let Some(v) = o.timeout_secs {
+                out.timeout_secs = v;
+            }
+            if let Some(v) = o.response_format {
+                out.response_format = Some(v);
+            }
+            if let Some(v) = &o.extra_body {
+                out.extra_body = v.clone();
+            }
+        }
+        out
+    }
 }
 
 impl Default for LlmSection {
@@ -288,6 +350,8 @@ impl Default for LlmSection {
             timeout_secs: 300,
             response_format: None,
             extra_body: serde_json::Value::Null,
+            ask: None,
+            ingest: None,
         }
     }
 }
@@ -556,6 +620,39 @@ mod tests {
         let mut cfg = VaultConfig::default();
         cfg.edges[0].name = "REFERS_TO".into();
         assert_ne!(a, cfg.hash());
+    }
+
+    #[test]
+    fn llm_task_overlay_inherits_base() {
+        let cfg: LlmSection = toml::from_str(
+            r#"
+            provider = "omlx"
+            model = "base-model"
+            base_url = "http://localhost:8000/v1"
+            api_key_env = "OMLX_API_KEY"
+
+            [ingest]
+            model = "ingest-model"
+
+            [ingest.extra_body]
+            repetition_penalty = 1.1
+
+            [ask]
+            model = "ask-model"
+            max_tokens = 4096
+            "#,
+        )
+        .unwrap();
+        let ingest = cfg.for_task("ingest");
+        assert_eq!(ingest.model, "ingest-model");
+        assert_eq!(ingest.base_url, "http://localhost:8000/v1"); // inherited
+        assert_eq!(ingest.extra_body["repetition_penalty"], 1.1);
+        let ask = cfg.for_task("ask");
+        assert_eq!(ask.model, "ask-model");
+        assert_eq!(ask.max_tokens, 4096);
+        assert_eq!(ask.api_key_env, "OMLX_API_KEY"); // inherited
+        // no overlay for other tasks → base
+        assert_eq!(cfg.for_task("other").model, "base-model");
     }
 
     #[test]

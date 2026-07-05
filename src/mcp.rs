@@ -249,6 +249,9 @@ impl CogsMcp {
         // handlers on a tokio worker, so run it on a plain OS thread.
         let answer = std::thread::scope(|s| {
             s.spawn(|| -> Result<cogs_ask::Answer, ErrorData> {
+                let mut vault = vault.clone();
+                vault.config.llm = vault.config.llm.for_task("ask");
+                let vault = &vault;
                 let chat = cogs_llm::make_provider(&vault.config.llm).map_err(internal)?;
                 let db = GraphDb::open_ro(vault).map_err(internal)?;
                 let embed = if vault.config.embeddings.enabled {

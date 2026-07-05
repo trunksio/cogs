@@ -392,7 +392,8 @@ fn query(cli: &Cli, cypher: &str) -> Result<()> {
 }
 
 fn ask(cli: &Cli, question: &str, as_json: bool) -> Result<()> {
-    let vault = open_vault(cli)?;
+    let mut vault = open_vault(cli)?;
+    vault.config.llm = vault.config.llm.for_task("ask");
     let db = GraphDb::open_ro(&vault)
         .context("opening graph db read-only (run `cogs sync` first if it doesn't exist)")?;
     let chat = cogs_llm::make_provider(&vault.config.llm)
@@ -461,7 +462,8 @@ fn open_db_freshened(
 }
 
 fn ingest(cli: &Cli, raw_file: &PathBuf, opts: cogs_ingest::IngestOptions, as_json: bool) -> Result<()> {
-    let vault = open_vault(cli)?;
+    let mut vault = open_vault(cli)?;
+    vault.config.llm = vault.config.llm.for_task("ingest");
     let chat = cogs_llm::make_provider(&vault.config.llm)
         .context("building the LLM provider (check [llm] in cogs.toml)")?;
     let embed = make_embedder(&vault);
