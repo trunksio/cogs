@@ -186,6 +186,18 @@ impl<'a> Teacher<'a> {
                 .context("no JSON object/array in model reply")
                 .and_then(|s| {
                     serde_json::from_str(&s)
+                        .or_else(|e| {
+                            // Models sometimes wrap the object in a
+                            // one-element array: [{...}] — unwrap and retry.
+                            match serde_json::from_str::<serde_json::Value>(&s) {
+                                Ok(serde_json::Value::Array(a))
+                                    if a.len() == 1 && a[0].is_object() =>
+                                {
+                                    serde_json::from_value(a.into_iter().next().unwrap())
+                                }
+                                _ => Err(e),
+                            }
+                        })
                         .context("model reply was not the expected JSON shape")
                 });
             let seq = match &self.recorder {
