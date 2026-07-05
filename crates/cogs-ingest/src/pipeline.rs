@@ -699,6 +699,7 @@ impl<'a> Ingester<'a> {
         let slug_re = regex::Regex::new(r"^[a-z0-9][a-z0-9-]{1,60}$").unwrap();
         let kinds = &self.vault.config.kinds.values;
         let mut new_pages = Vec::new();
+        let mut seen_new: HashSet<String> = HashSet::new();
         for mut spec in plan.new_pages {
             spec.slug = spec.slug.trim().to_lowercase();
             if !slug_re.is_match(&spec.slug) {
@@ -713,6 +714,9 @@ impl<'a> Ingester<'a> {
                 continue;
             }
             let id = format!("{}-{}", spec.dir, spec.slug);
+            if !seen_new.insert(id.clone()) {
+                continue; // model proposed the same page twice in one plan
+            }
             if by_id.contains_key(id.as_str())
                 || self.vault.root.join(format!("{prefix}{}/{}.md", spec.dir, spec.slug)).exists()
             {

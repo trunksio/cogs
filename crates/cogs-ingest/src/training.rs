@@ -209,8 +209,12 @@ impl<'a> Teacher<'a> {
                 Err(e) if attempt == 0 => {
                     tracing::warn!("teacher reply unparseable, retrying once: {e:#}");
                     // Greedy decoding is deterministic — an identical retry
-                    // would reproduce the identical broken reply. Add heat.
+                    // would reproduce the identical broken reply. Add heat,
+                    // and drop any server-side JSON constraint (a broken
+                    // json_object grammar is a prime suspect when the reply
+                    // was degenerate); the prompt still demands JSON.
                     params.temperature = params.temperature.max(0.4);
+                    params.json = false;
                     msgs.push(Message::assistant(raw));
                     msgs.push(Message::user(
                         "Your previous reply was not the required JSON. Reply again with \

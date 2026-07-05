@@ -267,6 +267,10 @@ pub struct LlmSection {
     /// HTTP timeout per completion. Local models generating long outputs
     /// (chunked ingest extractions) can legitimately take minutes.
     pub timeout_secs: u64,
+    /// Send OpenAI `response_format: json_object` on JSON calls. None =
+    /// provider default: off for omlx (its constrained decoding degenerates
+    /// into float arrays), on elsewhere. Prompts demand JSON either way.
+    pub response_format: Option<bool>,
 }
 
 impl Default for LlmSection {
@@ -278,6 +282,7 @@ impl Default for LlmSection {
             api_key_env: String::new(),
             max_tokens: 2048,
             timeout_secs: 300,
+            response_format: None,
         }
     }
 }

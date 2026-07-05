@@ -231,6 +231,8 @@ pub struct OpenAiCompatProvider {
     base_url: String,
     model: String,
     api_key: Option<String>,
+    /// Whether json-mode calls set `response_format: json_object`.
+    response_format: bool,
     client: reqwest::blocking::Client,
 }
 
@@ -253,7 +255,7 @@ impl ChatProvider for OpenAiCompatProvider {
             "max_tokens": params.max_tokens,
             "stream": false,
         });
-        if params.json {
+        if params.json && self.response_format {
             body["response_format"] = json!({ "type": "json_object" });
         }
         let mut req = self.client.post(self.endpoint()).json(&body);
@@ -377,11 +379,16 @@ pub fn make_provider(cfg: &LlmSection) -> Result<Box<dyn ChatProvider>> {
             } else {
                 env_key("OPENAI_API_KEY") // optional for local servers
             };
+            // omlx's json_object constrained decoding degenerates (emits
+            // float arrays), so it defaults off there; prompts demand JSON
+            // regardless and callers parse tolerantly.
+            let response_format = cfg.response_format.unwrap_or(provider != "omlx");
             Ok(Box::new(OpenAiCompatProvider {
                 label: cfg.provider.clone(),
                 base_url,
                 model: cfg.model.clone(),
                 api_key,
+                response_format,
                 client,
             }))
         }
