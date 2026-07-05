@@ -141,8 +141,9 @@ impl<'a> Asker<'a> {
 
         // Validate citations against the retrieved set; drop invented ones.
         // On abstention there's nothing being supported, so report no sources.
+        let abstained = synth.abstained || synth.answer.is_none();
         let by_id: HashMap<&str, &Evidence> = evidence.iter().map(|e| (e.id.as_str(), e)).collect();
-        let citations: Vec<Citation> = if synth.abstained {
+        let citations: Vec<Citation> = if abstained {
             vec![]
         } else {
             synth
@@ -155,11 +156,13 @@ impl<'a> Asker<'a> {
 
         Ok(Answer {
             question: question.to_string(),
-            text: synth.answer,
+            text: synth.answer.unwrap_or_else(|| {
+                "The wiki is silent on this — the model abstained.".into()
+            }),
             citations,
             contradictions,
             notes_considered: evidence.len(),
-            abstained: synth.abstained,
+            abstained,
         })
     }
 
@@ -328,7 +331,9 @@ impl<'a> Asker<'a> {
 
 #[derive(Debug, Deserialize)]
 struct SynthOut {
-    answer: String,
+    /// Abstaining models legitimately reply `"answer": null`.
+    #[serde(default)]
+    answer: Option<String>,
     #[serde(default)]
     citations: Vec<String>,
     #[serde(default)]
