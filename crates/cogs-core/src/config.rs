@@ -271,6 +271,10 @@ pub struct LlmSection {
     /// provider default: off for omlx (its constrained decoding degenerates
     /// into float arrays), on elsewhere. Prompts demand JSON either way.
     pub response_format: Option<bool>,
+    /// Extra request-body fields merged into every chat completion — server
+    /// escape hatch, e.g. disabling Qwen thinking on omlx/vLLM:
+    /// `[llm.extra_body.chat_template_kwargs] enable_thinking = false`.
+    pub extra_body: serde_json::Value,
 }
 
 impl Default for LlmSection {
@@ -283,6 +287,7 @@ impl Default for LlmSection {
             max_tokens: 2048,
             timeout_secs: 300,
             response_format: None,
+            extra_body: serde_json::Value::Null,
         }
     }
 }

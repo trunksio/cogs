@@ -233,6 +233,8 @@ pub struct OpenAiCompatProvider {
     api_key: Option<String>,
     /// Whether json-mode calls set `response_format: json_object`.
     response_format: bool,
+    /// Extra body fields merged into every request ([llm].extra_body).
+    extra_body: serde_json::Value,
     client: reqwest::blocking::Client,
 }
 
@@ -257,6 +259,11 @@ impl ChatProvider for OpenAiCompatProvider {
         });
         if params.json && self.response_format {
             body["response_format"] = json!({ "type": "json_object" });
+        }
+        if let Some(extra) = self.extra_body.as_object() {
+            for (k, v) in extra {
+                body[k] = v.clone();
+            }
         }
         let mut req = self.client.post(self.endpoint()).json(&body);
         if let Some(key) = &self.api_key {
@@ -389,6 +396,7 @@ pub fn make_provider(cfg: &LlmSection) -> Result<Box<dyn ChatProvider>> {
                 model: cfg.model.clone(),
                 api_key,
                 response_format,
+                extra_body: cfg.extra_body.clone(),
                 client,
             }))
         }
