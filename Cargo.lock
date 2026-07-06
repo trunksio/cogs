@@ -572,6 +572,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "cogs-wasm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "cogs-core",
+ "cogs-graph",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
