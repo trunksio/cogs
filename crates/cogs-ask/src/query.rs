@@ -51,12 +51,7 @@ pub fn hybrid_note_search(
     Ok(ids)
 }
 
-/// Reciprocal Rank Fusion accumulation (k=60 is the usual constant).
-pub fn rrf_merge<'i>(ranks: &mut HashMap<String, f64>, ids: impl Iterator<Item = &'i str>) {
-    for (rank, id) in ids.enumerate() {
-        *ranks.entry(id.to_string()).or_insert(0.0) += 1.0 / (60.0 + rank as f64);
-    }
-}
+pub use cogs_core::textquery::rrf_merge;
 
 pub fn cypher_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "\\'")
@@ -67,32 +62,11 @@ pub fn cypher_id_list(ids: &[String]) -> String {
     format!("[{}]", inner.join(", "))
 }
 
-/// Reduce free text to a space-joined bag of alphanumeric words so the FTS
-/// parser can't choke on punctuation/operators.
-pub fn sanitize_fts(q: &str) -> String {
-    q.split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() > 1)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+pub use cogs_core::textquery::sanitize_fts;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rrf_rewards_top_ranks() {
-        let mut r = HashMap::new();
-        rrf_merge(&mut r, ["a", "b", "c"].into_iter());
-        rrf_merge(&mut r, ["b", "a"].into_iter());
-        assert!(r["b"] > r["c"]);
-        assert!(r["a"] > r["c"]);
-    }
-
-    #[test]
-    fn fts_sanitize_strips_punctuation() {
-        assert_eq!(sanitize_fts("How does A2A's contract work?!"), "How does A2A contract work");
-    }
 
     #[test]
     fn id_list_quotes_and_escapes() {

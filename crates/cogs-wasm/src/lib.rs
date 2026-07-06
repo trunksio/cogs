@@ -87,4 +87,19 @@ mod bindings {
             self.inner.health(today_iso).to_string()
         }
     }
+
+    /// FTS query sanitizer — parity with native retrieval (cogs-core).
+    #[wasm_bindgen(js_name = sanitizeFts)]
+    pub fn sanitize_fts(q: &str) -> String {
+        cogs_core::textquery::sanitize_fts(q)
+    }
+
+    /// Reciprocal-Rank-Fusion over ranked id lists (JSON string[][] in,
+    /// JSON [id, score][] out, best-first, deterministic ties).
+    #[wasm_bindgen(js_name = rrfFuse)]
+    pub fn rrf_fuse(lists_json: &str, k: usize) -> Result<String, JsError> {
+        let lists: Vec<Vec<String>> =
+            serde_json::from_str(lists_json).map_err(|e| JsError::new(&e.to_string()))?;
+        Ok(serde_json::to_string(&cogs_core::textquery::rrf_fuse(&lists, k)).unwrap())
+    }
 }

@@ -4,6 +4,7 @@ pub mod note;
 pub mod parse;
 pub mod resolve;
 pub mod scan;
+pub mod textquery;
 
 pub use config::{Vault, VaultConfig};
 pub use index::VaultIndex;
