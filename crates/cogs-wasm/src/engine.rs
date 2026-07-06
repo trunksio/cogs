@@ -259,6 +259,27 @@ impl Engine {
         out
     }
 
+    /// One search document per note — the exact fields native FTS indexes
+    /// (title + wikilink-stripped body_text, cogs-graph schema.rs), plus id
+    /// and tags for the browser index. Sorted by id.
+    pub fn search_docs(&self) -> Value {
+        let mut notes: Vec<&ParsedNote> = self.index.notes().collect();
+        notes.sort_by(|a, b| a.id.cmp(&b.id));
+        Value::Array(
+            notes
+                .iter()
+                .map(|n| {
+                    json!({
+                        "id": n.id,
+                        "title": n.title,
+                        "body": n.body_text,
+                        "tags": n.tags,
+                    })
+                })
+                .collect(),
+        )
+    }
+
     /// Orphans, stale notes (vs `today`, ISO date), and contradiction pairs —
     /// the /api/health surface the viz health overlay uses.
     pub fn health(&self, today_iso: &str) -> Value {

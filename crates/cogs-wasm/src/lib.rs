@@ -88,6 +88,16 @@ mod bindings {
         }
     }
 
+    #[wasm_bindgen]
+    impl WasmVault {
+        /// JSON [{id,title,body,tags}] — the searchable fields, body being
+        /// the wikilink-stripped body_text native FTS indexes.
+        #[wasm_bindgen(js_name = searchDocs)]
+        pub fn search_docs(&self) -> String {
+            self.inner.search_docs().to_string()
+        }
+    }
+
     /// FTS query sanitizer — parity with native retrieval (cogs-core).
     #[wasm_bindgen(js_name = sanitizeFts)]
     pub fn sanitize_fts(q: &str) -> String {
