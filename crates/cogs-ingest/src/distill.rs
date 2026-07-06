@@ -188,7 +188,7 @@ fn mined_pairs(
             continue;
         };
         let note = parse_note(rel, &text, cfg);
-        if note.kind.as_deref() != Some("source") {
+        if note.kind.as_deref() != Some(cfg.ingest.source_kind.as_str()) {
             continue;
         }
         let refs: Vec<&str> = note
@@ -222,7 +222,7 @@ fn mined_pairs(
         }
 
         let (_, _, page_body, _) = split_frontmatter(&text);
-        let Some(recon) = reconstruct(&text, page_body, &note.slug, &raw) else {
+        let Some(recon) = reconstruct(&text, page_body, &note.slug, &raw, &cfg.ingest.new_pages) else {
             skip("source page missing Summary/Key claims sections");
             continue;
         };
@@ -301,6 +301,7 @@ fn reconstruct(
     page_body: &str,
     page_slug: &str,
     raw: &cogs_core::note::ParsedResource,
+    new_page_dirs: &BTreeMap<String, String>,
 ) -> Option<Reconstruction> {
     let summary = normalize(section(page_body, "Summary")?);
     let linked_claims = bullet_items(section(page_body, "Key claims")?);
@@ -353,16 +354,16 @@ fn reconstruct(
         })
         .unwrap_or_default();
 
-    // Entities: what the page links to under entities/ and concepts/.
+    // Entities: what the page links to under the configured new-page dirs.
     let mut entities: Vec<EntityMention> = Vec::new();
     let mut seen_e: std::collections::HashSet<String> = Default::default();
     for l in scan_wikilinks(page_body, 0) {
         let t = l.target.trim().to_lowercase();
-        let kind = if t.starts_with("entities/") {
-            "entity"
-        } else if t.starts_with("concepts/") {
-            "concept"
-        } else {
+        let Some(kind) = new_page_dirs
+            .iter()
+            .find(|(dir, _)| t.starts_with(&format!("{dir}/")))
+            .map(|(_, k)| k.as_str())
+        else {
             continue;
         };
         let name = l
@@ -437,7 +438,8 @@ fn run_pairs(
 
         // The created source page anchors extract/suggest_links acceptance.
         let source_write = manifest.writes.iter().find(|w| {
-            w.kind == WriteKind::Created && w.rel_path.contains("/sources/")
+            w.kind == WriteKind::Created
+                && w.rel_path.contains(&format!("/{}/", vault.config.ingest.source_dir))
         });
 
         for rec in &records {
@@ -566,7 +568,7 @@ fn page_backed_pair(
     let raw_text =
         std::fs::read_to_string(vault.root.join(&manifest.raw_rel_path)).unwrap_or_default();
     let raw = parse_resource(&manifest.raw_rel_path, &raw_text, true, &vault.config);
-    let recon = reconstruct(&text, body, &slug, &raw)?;
+    let recon = reconstruct(&text, body, &slug, &raw, &vault.config.ingest.new_pages)?;
     Some(Pair {
         task,
         key: derive_ids(page_rel, &vault.config.vault.id_strip_prefix).0,
@@ -604,7 +606,8 @@ fn links_run_pair(
     let mut update_targets = Vec::new();
     for w in &manifest.writes {
         let rel = &w.rel_path;
-        if rel == page_rel || rel.ends_with("log.md") {
+        let log_file = &vault.config.ingest.log_file;
+        if rel == page_rel || (!log_file.is_empty() && rel.ends_with(log_file.as_str())) {
             continue;
         }
         let target = rel.strip_prefix(prefix).unwrap_or(rel).trim_end_matches(".md").to_string();

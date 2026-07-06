@@ -155,8 +155,13 @@ fully local.
 - **Config-driven**: a `cogs.toml` in the vault root declares note kinds,
   typed edges derived from frontmatter fields (e.g. `source_refs` →
   `SOURCE_OF`, `contradicts` → `CONTRADICTS`), an immutable resource layer,
-  per-kind required-field diagnostics, and embedding settings. See
-  `examples/aoa-knowledge.cogs.toml` for a full setup.
+  per-kind required-field diagnostics, embedding settings, and (via
+  `[ingest]`) where generated pages go and what they're stamped with. Nothing
+  about the vault's shape is hardcoded: `examples/aoa-knowledge.cogs.toml`
+  drives a Karpathy-style research wiki, and `examples/okf.cogs.toml` drives
+  an [Open Knowledge Format](https://github.com/ashtonkj/Nameless.TaskList)
+  personal task/message vault — same engine, same features, different
+  conventions.
 - **One writer, many readers**: the first process to a vault wins a writer
   lock and keeps the graph DB fresh (file watcher + incremental sync); other
   processes open the DB read-only. The LSP's latency-critical features run

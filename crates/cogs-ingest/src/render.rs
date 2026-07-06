@@ -9,8 +9,11 @@ use cogs_core::note::ParsedResource;
 use crate::{ContradictionFinding, Extraction};
 use crate::retrieve::NearDuplicate;
 
-/// Render the new `sources/<slug>.md` page per the AGENTS.md schema. Claim
-/// texts are expected to already carry their wikilinks (weave output).
+/// Render the new source page per cogs' generated-page schema (Summary /
+/// Key claims / Quotes / Contradictions / Cross-references — fixed sections
+/// that distill mining depends on; where the page LIVES and what it's
+/// stamped with comes from [ingest]). Claim texts are expected to already
+/// carry their wikilinks (weave output).
 pub fn source_page(
     ex: &Extraction,
     raw: &ParsedResource,
@@ -18,10 +21,12 @@ pub fn source_page(
     today: NaiveDate,
     cross_references: &[String],
     contradictions: &[ContradictionFinding],
+    ingest: &cogs_core::config::IngestSection,
+    model: &str,
 ) -> String {
     let mut fm = String::from("---\n");
     fm.push_str(&format!("title: {}\n", yaml_scalar(&raw.title)));
-    fm.push_str("kind: source\n");
+    fm.push_str(&format!("kind: {}\n", yaml_scalar(&ingest.source_kind)));
     fm.push_str("status: draft\n");
     fm.push_str(&format!("updated: {today}\n"));
     if let Some(captured) = raw.captured {
@@ -43,7 +48,13 @@ pub fn source_page(
             contradictions.iter().map(|c| yaml_scalar(&c.page_id)).collect();
         fm.push_str(&format!("contradicts: [{}]\n", ids.join(", ")));
     }
-    fm.push_str("owner: llm\n---\n");
+    if !ingest.owner.is_empty() {
+        fm.push_str(&format!("owner: {}\n", yaml_scalar(&ingest.owner)));
+    }
+    if ingest.stamp_model {
+        fm.push_str(&format!("ingested_by: {}\n", yaml_scalar(model)));
+    }
+    fm.push_str("---\n");
 
     let mut body = format!("\n# {}\n\n## Summary\n\n{}\n", raw.title, ex.summary.trim());
 
@@ -97,6 +108,8 @@ pub fn new_page(
     source_slug: &str,
     today: NaiveDate,
     section_heading: &str,
+    ingest: &cogs_core::config::IngestSection,
+    model: &str,
 ) -> String {
     let mut fm = String::from("---\n");
     fm.push_str(&format!("title: {}\n", yaml_scalar(&spec.title)));
@@ -104,7 +117,13 @@ pub fn new_page(
     fm.push_str("status: draft\n");
     fm.push_str(&format!("updated: {today}\n"));
     fm.push_str("tags: []\n");
-    fm.push_str("owner: llm\n---\n");
+    if !ingest.owner.is_empty() {
+        fm.push_str(&format!("owner: {}\n", yaml_scalar(&ingest.owner)));
+    }
+    if ingest.stamp_model {
+        fm.push_str(&format!("ingested_by: {}\n", yaml_scalar(model)));
+    }
+    fm.push_str("---\n");
 
     let mut body = format!("\n# {}\n", spec.title);
     if !spec.blurb.trim().is_empty() {
@@ -124,12 +143,13 @@ pub fn update_section(section_heading: &str, section_md: &str) -> String {
     format!("\n{section_heading}\n\n{}\n", section_md.trim())
 }
 
-/// One appended `log.md` entry in the vault's observed batch format.
+/// One appended audit-log entry in the vault's observed batch format.
 #[allow(clippy::too_many_arguments)]
 pub fn log_entry(
     today: NaiveDate,
     raw_title: &str,
     raw_rel: &str,
+    source_dir: &str,
     source_slug: &str,
     pages_updated: &[String],
     pages_created: &[String],
@@ -140,7 +160,7 @@ pub fn log_entry(
 ) -> String {
     let mut e = format!("\n## [{today}] ingest | {raw_title}\n");
     e.push_str(&format!("- source: {raw_rel}\n"));
-    e.push_str(&format!("- source page created: sources/{source_slug}\n"));
+    e.push_str(&format!("- source page created: {source_dir}/{source_slug}\n"));
     e.push_str(&format!(
         "- pages updated: {}\n",
         if pages_updated.is_empty() { "none".into() } else { pages_updated.join(", ") }
@@ -155,7 +175,7 @@ pub fn log_entry(
             contradictions.len(),
             contradictions
                 .iter()
-                .map(|c| format!("{} ⇄ sources/{source_slug}", c.page_id))
+                .map(|c| format!("{} ⇄ {source_dir}/{source_slug}", c.page_id))
                 .collect::<Vec<_>>()
                 .join("; ")
         ));

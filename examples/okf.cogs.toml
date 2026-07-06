@@ -1,0 +1,113 @@
+# cogs over an Open Knowledge Format (OKF) vault
+# — the spec from https://github.com/ashtonkj/Nameless.TaskList (docs/DESIGN.md).
+#
+# OKF and cogs share the same core model: files are the database, markdown +
+# YAML frontmatter, wikilinks as the graph, statuses instead of deletion.
+# This config maps OKF's conventions onto cogs so the whole engine — sync,
+# LSP, MCP, `cogs ask`, semantic search, the graph viz — works over a
+# personal task/message vault exactly as it does over a research wiki.
+#
+# Nothing here is special-cased in cogs: it is the same config surface every
+# vault uses. Drop this file into an OKF vault root as `cogs.toml`.
+
+[vault]
+# Every OKF concept type is a note; messages are the immutable capture layer
+# (OKF's pipeline never edits them once written — the same contract as a
+# cogs resource layer).
+notes = [
+  "people/**/*.md",
+  "tasks/**/*.md",
+  "events/**/*.md",
+  "topics/**/*.md",
+  "contexts/**/*.md",
+  "commitments/**/*.md",
+  "locations/**/*.md",
+  "notes/**/*.md",
+  "projects/**/*.md",
+  "channels/**/*.md",
+]
+exclude = ["_meta/**"]
+id_strip_prefix = ""          # ids keep the full path: tasks-pending-book-venue
+
+[resources]
+# The message layer: immutable, timestamp-keyed, provenance targets.
+paths = ["messages/**/*.md"]
+[resources.date_fields]
+captured = "timestamp"
+source = "timestamp"
+
+[notes.fields]
+# OKF uses `type:` where cogs defaults to `kind:`; field names are config.
+kind = "type"
+updated = "last_updated"
+
+[kinds]
+values = ["Person", "Task", "Event", "Channel", "Topic", "Context", "Commitment", "Location", "Note", "Project", "Index"]
+unknown = "warn"
+
+# Body wikilinks ([[people/family/ethan]], [[tasks/pending/book-venue]]) —
+# path-form targets resolve against full ids.
+[[edges]]
+name = "LINKS_TO"
+source = "wikilinks"
+
+# OKF's typed relationship fields become typed graph edges.
+[[edges]]
+name = "INVOLVES"            # task/event/topic → person
+source = "frontmatter"
+field = "people"
+
+[[edges]]
+name = "ABOUT"               # task/event/message → topic
+source = "frontmatter"
+field = "topic"
+
+[[edges]]
+name = "SOURCE_OF"           # provenance: task/commitment → message
+source = "frontmatter"
+field = "source_message"
+target = "resource"
+
+[[edges]]
+name = "ASSIGNED"            # commitment → task
+source = "frontmatter"
+field = "task_assigned"
+
+[[edges]]
+name = "PART_OF"             # task → project
+source = "frontmatter"
+field = "project"
+
+[[edges]]
+name = "AT"                  # event/person → location
+source = "frontmatter"
+field = "location"
+
+[tags]
+field = "tags"
+inline = false
+
+[diagnostics]
+broken_link = "warn"
+ambiguous_link = "warn"
+# OKF requires provenance on tasks and commitments.
+required_fields = { Task = ["source_message"], Commitment = ["source_message", "due"] }
+# OKF marks topics stale after 14 days.
+stale_after_days = 14
+
+[ingest]
+# `cogs ingest <message-file>` writes knowledge notes from captures using
+# OKF's dirs and stamps (Task/Event spawning is Nameless.TaskList's own
+# pipeline; cogs ingest covers the knowledge-note side).
+source_dir = "notes"
+source_kind = "Note"
+new_pages = { topics = "Topic", people = "Person", locations = "Location" }
+log_file = "_meta/pipeline-log.md"
+owner = ""                   # OKF doesn't use owner:
+stamp_model = true           # …but processed_by-style provenance is core OKF
+
+[embeddings]
+enabled = false              # enable as usual for semantic search
+
+[server]
+port = 7117

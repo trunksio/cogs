@@ -285,8 +285,9 @@ impl<'a> Ingester<'a> {
         )?;
 
         // ---- stage 4: materialise -----------------------------------------
+        let ingest_cfg = &self.vault.config.ingest;
         let slug = &extraction.suggested_slug;
-        let source_rel = format!("{prefix}sources/{slug}.md");
+        let source_rel = format!("{prefix}{}/{slug}.md", ingest_cfg.source_dir);
         let page_md = render::source_page(
             &extraction,
             &raw,
@@ -294,18 +295,7 @@ impl<'a> Ingester<'a> {
             self.opts.today,
             &weave.cross_references,
             &weave.contradictions,
-        );
-        let log_rel = format!("{prefix}log.md");
-        let log_md = render::log_entry(
-            self.opts.today,
-            &raw.title,
-            &raw_rel,
-            slug,
-            &weave.pages_updated,
-            &weave.pages_created,
-            &weave.contradictions,
-            &near_duplicates,
-            &run_id,
+            ingest_cfg,
             &self.vault.config.llm.model,
         );
 
@@ -318,14 +308,32 @@ impl<'a> Ingester<'a> {
             section_content: None,
         }];
         writes.extend(weave.writes);
-        writes.push(PlannedWrite {
-            rel_path: log_rel,
-            action: Action::Append,
-            content: log_md,
-            seq: None,
-            section_heading: Some(format!("## [{}] ingest | {}", self.opts.today, raw.title)),
-            section_content: None,
-        });
+        if !ingest_cfg.log_file.is_empty() {
+            let log_md = render::log_entry(
+                self.opts.today,
+                &raw.title,
+                &raw_rel,
+                &ingest_cfg.source_dir,
+                slug,
+                &weave.pages_updated,
+                &weave.pages_created,
+                &weave.contradictions,
+                &near_duplicates,
+                &run_id,
+                &self.vault.config.llm.model,
+            );
+            writes.push(PlannedWrite {
+                rel_path: format!("{prefix}{}", ingest_cfg.log_file),
+                action: Action::Append,
+                content: log_md,
+                seq: None,
+                section_heading: Some(format!(
+                    "## [{}] ingest | {}",
+                    self.opts.today, raw.title
+                )),
+                section_content: None,
+            });
+        }
 
         if self.opts.dry_run {
             return Ok(IngestReport {
@@ -613,9 +621,15 @@ impl<'a> Ingester<'a> {
             }
             ex.suggested_slug = fallback;
         }
+        let source_dir = &self.vault.config.ingest.source_dir;
         let base = ex.suggested_slug.clone();
         let mut n = 1;
-        while self.vault.root.join(format!("{prefix}sources/{}.md", ex.suggested_slug)).exists() {
+        while self
+            .vault
+            .root
+            .join(format!("{prefix}{source_dir}/{}.md", ex.suggested_slug))
+            .exists()
+        {
             n += 1;
             ex.suggested_slug = format!("{base}-{n}");
         }
@@ -644,7 +658,8 @@ impl<'a> Ingester<'a> {
         let plain_claims: Vec<String> = ex.key_claims.iter().map(|c| c.text.clone()).collect();
         let entity_names: Vec<String> = ex.entities.iter().map(|e| e.name.clone()).collect();
         let source_slug = ex.suggested_slug.clone();
-        let source_id = format!("sources-{source_slug}");
+        let source_dir = self.vault.config.ingest.source_dir.clone();
+        let source_id = format!("{source_dir}-{source_slug}");
 
         // Wikilink targets are path-form (`concepts/agent-registry`), not ids:
         // that is what the vault's own resolver accepts.
@@ -698,6 +713,7 @@ impl<'a> Ingester<'a> {
         // ---- validate: new pages -------------------------------------------
         let slug_re = regex::Regex::new(r"^[a-z0-9][a-z0-9-]{1,60}$").unwrap();
         let kinds = &self.vault.config.kinds.values;
+        let new_page_dirs = &self.vault.config.ingest.new_pages;
         let mut new_pages = Vec::new();
         let mut seen_new: HashSet<String> = HashSet::new();
         for mut spec in plan.new_pages {
@@ -706,13 +722,15 @@ impl<'a> Ingester<'a> {
                 warnings.push(format!("dropped new page with malformed slug {:?}", spec.slug));
                 continue;
             }
-            if !matches!(spec.dir.as_str(), "entities" | "concepts") {
+            let Some(dir_kind) = new_page_dirs.get(&spec.dir) else {
                 warnings.push(format!(
-                    "dropped new page {:?}: dir must be entities|concepts, got {:?}",
-                    spec.slug, spec.dir
+                    "dropped new page {:?}: dir must be one of {:?}, got {:?}",
+                    spec.slug,
+                    new_page_dirs.keys().collect::<Vec<_>>(),
+                    spec.dir
                 ));
                 continue;
-            }
+            };
             let id = format!("{}-{}", spec.dir, spec.slug);
             if !seen_new.insert(id.clone()) {
                 continue; // model proposed the same page twice in one plan
@@ -724,8 +742,7 @@ impl<'a> Ingester<'a> {
                 continue;
             }
             if spec.kind.is_empty() || (!kinds.is_empty() && !kinds.contains(&spec.kind)) {
-                spec.kind =
-                    if spec.dir == "entities" { "entity".into() } else { "concept".into() };
+                spec.kind = dir_kind.clone();
             }
             if spec.title.trim().is_empty() {
                 spec.title = spec.slug.replace('-', " ");
@@ -757,7 +774,7 @@ impl<'a> Ingester<'a> {
             linked = plain_claims.clone();
         }
         for (i, lc) in linked.iter_mut().enumerate() {
-            let cleaned = sanitize_links(lc, &resolver, "sources", warnings);
+            let cleaned = sanitize_links(lc, &resolver, &source_dir, warnings);
             if normalize(&strip_wikilinks_for_fts(&cleaned)) != normalize(&plain_claims[i]) {
                 warnings.push(format!(
                     "weave rewrote claim {} — keeping the original text",
@@ -776,7 +793,7 @@ impl<'a> Ingester<'a> {
         let mut cross_references: Vec<String> = Vec::new();
         for target in plan.cross_references {
             let target = target.trim().trim_matches(|c| c == '[' || c == ']').to_string();
-            if let Resolution::Resolved(_) = resolver.resolve(&target, "sources") {
+            if let Resolution::Resolved(_) = resolver.resolve(&target, &source_dir) {
                 if !cross_references.contains(&target) {
                     cross_references.push(target);
                 }
@@ -805,12 +822,20 @@ impl<'a> Ingester<'a> {
             let id = format!("{}-{}", spec.dir, spec.slug);
             let claims_for: Vec<String> = linked
                 .iter()
-                .filter(|c| links_to(c, &resolver, "sources", &id))
+                .filter(|c| links_to(c, &resolver, &source_dir, &id))
                 .cloned()
                 .collect();
             let heading = format!("## From ingest ({})", self.opts.today);
             let content =
-                render::new_page(spec, &claims_for, &source_slug, self.opts.today, &heading);
+                render::new_page(
+                spec,
+                &claims_for,
+                &source_slug,
+                self.opts.today,
+                &heading,
+                &self.vault.config.ingest,
+                &self.vault.config.llm.model,
+            );
             writes.push(PlannedWrite {
                 rel_path: format!("{prefix}{}/{}.md", spec.dir, spec.slug),
                 action: Action::Create,

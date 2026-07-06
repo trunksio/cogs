@@ -24,6 +24,7 @@ pub struct VaultConfig {
     pub diagnostics: DiagnosticsSection,
     pub embeddings: EmbeddingsSection,
     pub llm: LlmSection,
+    pub ingest: IngestSection,
     pub server: ServerSection,
 }
 
@@ -356,6 +357,46 @@ impl Default for LlmSection {
     }
 }
 
+/// Vault conventions for `cogs ingest` — where generated pages go and what
+/// they're stamped with. Defaults match the karpathy three-layer scaffold;
+/// OKF-style or custom vaults override. Runtime-only: excluded from the
+/// config hash, so changing it never rebuilds the graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct IngestSection {
+    /// Directory (under the notes root) for generated source pages.
+    pub source_dir: String,
+    /// `kind` stamped on generated source pages. Also what distill mines.
+    pub source_kind: String,
+    /// Directories the weave stage may propose new pages into, mapped to the
+    /// kind each implies (BTreeMap: deterministic prompt order).
+    pub new_pages: BTreeMap<String, String>,
+    /// Audit-log file (relative to the notes root); empty disables logging.
+    pub log_file: String,
+    /// Value for the `owner:` frontmatter field on generated pages; empty
+    /// omits the field.
+    pub owner: String,
+    /// Stamp `ingested_by: <model-id>` on generated pages (file-local
+    /// provenance that survives moving the note between vaults).
+    pub stamp_model: bool,
+}
+
+impl Default for IngestSection {
+    fn default() -> Self {
+        Self {
+            source_dir: "sources".into(),
+            source_kind: "source".into(),
+            new_pages: BTreeMap::from([
+                ("concepts".into(), "concept".into()),
+                ("entities".into(), "entity".into()),
+            ]),
+            log_file: "log.md".into(),
+            owner: "llm".into(),
+            stamp_model: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ServerSection {
@@ -388,6 +429,7 @@ impl Default for VaultConfig {
             diagnostics: DiagnosticsSection::default(),
             embeddings: EmbeddingsSection::default(),
             llm: LlmSection::default(),
+            ingest: IngestSection::default(),
             server: ServerSection::default(),
         }
     }
@@ -526,6 +568,7 @@ impl VaultConfig {
         let mut v = serde_json::to_value(self).expect("config serializes");
         if let Some(o) = v.as_object_mut() {
             o.remove("llm");
+            o.remove("ingest");
             o.remove("server");
         }
         let canonical = serde_json::to_string(&v).expect("config serializes");
@@ -663,6 +706,8 @@ mod tests {
         cfg.llm.timeout_secs = 999;
         cfg.llm.extra_body = serde_json::json!({ "chat_template_kwargs": { "enable_thinking": false } });
         cfg.server.port = 9999;
+        cfg.ingest.source_dir = "captures".into();
+        cfg.ingest.new_pages.insert("topics".into(), "Topic".into());
         assert_eq!(a, cfg.hash(), "runtime-only sections must never affect the hash");
     }
 }
