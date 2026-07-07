@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cogs-core = { path = "../cogs-core" }
+cogs-ingest-core = { path = "../cogs-ingest-core" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

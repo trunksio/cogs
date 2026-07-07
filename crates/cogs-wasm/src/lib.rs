@@ -104,6 +104,104 @@ mod bindings {
         cogs_core::textquery::sanitize_fts(q)
     }
 
+    // ---- ingest validation (cogs-ingest-core) ------------------------------
+    // Browser-side ingest (M6): a local model drafts an Extraction; THE SAME
+    // hard validators that gate native `cogs ingest` gate it here. All inputs
+    // and outputs are JSON strings, mirroring the crate's serde shapes.
+
+    use std::collections::{BTreeMap, HashSet};
+
+    use cogs_core::resolve::LinkResolver;
+    use cogs_ingest_core::{validators, Extraction, NewPageSpec};
+
+    fn js_err(e: impl std::fmt::Display) -> JsError {
+        JsError::new(&e.to_string())
+    }
+
+    /// Tolerant parse of a raw model reply into an Extraction (balanced-JSON
+    /// extraction, max_tokens truncation repair, one-element-array unwrap —
+    /// the same ladder native teacher calls use). Returns the canonical
+    /// Extraction JSON.
+    #[wasm_bindgen(js_name = parseExtractionReply)]
+    pub fn parse_extraction_reply(raw: &str) -> Result<String, JsError> {
+        let ex: Extraction = cogs_ingest_core::parse_json_reply(raw)
+            .map_err(|e| JsError::new(&format!("{e:#}")))?;
+        Ok(serde_json::to_string(&ex).unwrap())
+    }
+
+    /// Validate a stage-1 extraction. `existing_slugs_json`: JSON string[] of
+    /// slugs already taken in the source dir (drives collision suffixing);
+    /// `fallback_slug` replaces a malformed model slug (see
+    /// `slugFromFilename`). Returns JSON {"extraction", "warnings"}; an
+    /// extraction whose `key_claims` come back empty is unsalvageable and the
+    /// ingest must be aborted (native parity).
+    #[wasm_bindgen(js_name = validateExtraction)]
+    pub fn validate_extraction(
+        ex_json: &str,
+        raw_body: &str,
+        existing_slugs_json: &str,
+        fallback_slug: &str,
+    ) -> Result<String, JsError> {
+        let ex: Extraction = serde_json::from_str(ex_json).map_err(js_err)?;
+        let slugs: HashSet<String> = serde_json::from_str(existing_slugs_json).map_err(js_err)?;
+        let (extraction, warnings) =
+            validators::validate_extraction(ex, raw_body, &slugs, fallback_slug);
+        Ok(serde_json::json!({ "extraction": extraction, "warnings": warnings }).to_string())
+    }
+
+    /// Validate weave-stage new-page specs. `specs_json`: JSON NewPageSpec[];
+    /// `new_page_dirs_json`: JSON {dir: impliedKind} (the [ingest].new_pages
+    /// map); `kinds_json`: JSON string[] of known kinds (empty = kinds
+    /// unused); `existing_ids_json`: JSON string[] of existing note ids.
+    /// Returns JSON {"new_pages", "warnings"}.
+    #[wasm_bindgen(js_name = validateNewPages)]
+    pub fn validate_new_pages(
+        specs_json: &str,
+        new_page_dirs_json: &str,
+        kinds_json: &str,
+        existing_ids_json: &str,
+    ) -> Result<String, JsError> {
+        let specs: Vec<NewPageSpec> = serde_json::from_str(specs_json).map_err(js_err)?;
+        let dirs: BTreeMap<String, String> =
+            serde_json::from_str(new_page_dirs_json).map_err(js_err)?;
+        let kinds: Vec<String> = serde_json::from_str(kinds_json).map_err(js_err)?;
+        let existing: HashSet<String> = serde_json::from_str(existing_ids_json).map_err(js_err)?;
+        let (new_pages, warnings) =
+            validators::validate_new_pages(specs, &dirs, &kinds, &existing);
+        Ok(serde_json::json!({ "new_pages": new_pages, "warnings": warnings }).to_string())
+    }
+
+    /// Validate weave-stage linked claims against the plain originals.
+    /// `linked_json` / `plain_json`: JSON string[]; `id_slug_pairs_json`:
+    /// JSON [id, slug][] over which links must resolve (existing notes +
+    /// accepted new pages + the source page — exactly what will exist after
+    /// the ingest); `source_dir` is the resolver's same-dir tiebreak context.
+    /// Returns JSON {"linked_claims", "warnings"}.
+    #[wasm_bindgen(js_name = validateLinkedClaims)]
+    pub fn validate_linked_claims(
+        linked_json: &str,
+        plain_json: &str,
+        id_slug_pairs_json: &str,
+        source_dir: &str,
+    ) -> Result<String, JsError> {
+        let linked: Vec<String> = serde_json::from_str(linked_json).map_err(js_err)?;
+        let plain: Vec<String> = serde_json::from_str(plain_json).map_err(js_err)?;
+        let pairs: Vec<(String, String)> =
+            serde_json::from_str(id_slug_pairs_json).map_err(js_err)?;
+        let resolver = LinkResolver::new(pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())));
+        let (linked_claims, warnings) =
+            validators::validate_linked_claims(linked, &plain, &resolver, source_dir);
+        Ok(serde_json::json!({ "linked_claims": linked_claims, "warnings": warnings })
+            .to_string())
+    }
+
+    /// Fallback slug from a raw capture filename (date prefix and extension
+    /// stripped, non-slug chars squashed) — feed to `validateExtraction`.
+    #[wasm_bindgen(js_name = slugFromFilename)]
+    pub fn slug_from_filename(rel_path: &str) -> String {
+        validators::slug_from_filename(rel_path)
+    }
+
     /// Reciprocal-Rank-Fusion over ranked id lists (JSON string[][] in,
     /// JSON [id, score][] out, best-first, deterministic ties).
     #[wasm_bindgen(js_name = rrfFuse)]
