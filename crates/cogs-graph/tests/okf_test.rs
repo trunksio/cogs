@@ -1,9 +1,10 @@
-//! An Open Knowledge Format (OKF) vault — the spec from
-//! github.com/ashtonkj/Nameless.TaskList — indexes with the shipped example
-//! config and zero cogs code changes: OKF `type:` as kind, its relationship
-//! fields as typed edges, `[[type/subtype/slug]]` path links, messages as the
-//! immutable resource layer. Uses examples/okf.cogs.toml verbatim so the
-//! example stays honest.
+//! The Nameless.TaskList "Open Knowledge Format" vault — the spec from
+//! github.com/ashtonkj/Nameless.TaskList, NOT Google's OKF (that one is
+//! covered by okf_google_test.rs) — indexes with the shipped example config
+//! and zero cogs code changes: OKF `type:` as kind, its relationship fields
+//! as typed edges, `[[type/subtype/slug]]` path links, messages as the
+//! immutable resource layer. Uses examples/okf-nameless.cogs.toml verbatim
+//! so the example stays honest.
 
 use std::fs;
 use std::path::Path;
@@ -11,7 +12,7 @@ use std::path::Path;
 use cogs_core::config::Vault;
 use cogs_graph::{GraphDb, SyncEngine};
 
-const OKF_CONFIG: &str = include_str!("../../../examples/okf.cogs.toml");
+const OKF_CONFIG: &str = include_str!("../../../examples/okf-nameless.cogs.toml");
 
 fn write(root: &Path, rel: &str, content: &str) {
     let p = root.join(rel);

@@ -1,0 +1,66 @@
+# cogs as a conformant consumer of Google's Open Knowledge Format (OKF) v0.1
+# — https://github.com/GoogleCloudPlatform/knowledge-catalog (okf/SPEC.md).
+# NOT the Nameless.TaskList OKF (same name, different spec) — for that one
+# see examples/okf-nameless.cogs.toml.
+#
+# OKF v0.1 mapping choices, section by section:
+#
+# - Concepts (§3.1): every .md file in the bundle EXCEPT the reserved
+#   index.md / log.md filenames (directory listings and update history are
+#   navigation aids, not knowledge nodes — and index.md carries no
+#   frontmatter, at most `okf_version` at the bundle root).
+# - Frontmatter (§4.1): `type` is OKF's one required field → cogs `kind`.
+#   `title`/`tags`/`timestamp` map onto cogs' typed note columns; `kinds`
+#   is left open ([kinds] values = []) because OKF types are not registered
+#   centrally and unknown types must be tolerated. `description` and
+#   `resource` stay as free-form frontmatter — cogs preserves all unknown
+#   keys in the note payload (visible via MCP/API), which also satisfies
+#   §4.1's "tolerate and preserve unknown keys".
+# - Cross-links (§5): standard markdown links in BOTH spec forms —
+#   bundle-root-absolute (/tables/customers.md) and relative (./other.md,
+#   ../x.md) — via `markdown_paths = true`. All links are untyped directed
+#   edges (LINKS_TO); broken links are tolerated (no edge, no error), per
+#   §5.3 and §9. Wikilinks still work if a bundle happens to contain them —
+#   the two syntaxes coexist on the same edge.
+#
+# Drop this file into an OKF bundle root as `cogs.toml`.
+
+[vault]
+# Every non-reserved .md is a concept; the bundle root is the id root.
+notes = ["**/*.md"]
+exclude = ["**/index.md", "**/log.md"]
+id_strip_prefix = ""          # concept id = bundle path minus .md (§2)
+
+[notes.fields]
+kind = "type"                 # OKF's required `type` (§4.1)
+title = "title"               # optional; cogs falls back to the file id
+updated = "timestamp"         # ISO 8601 last-meaningful-change
+                              # (tags map via [tags] below)
+
+[kinds]
+# Deliberately empty: OKF type values are producer-defined and unknown
+# types MUST be tolerated (§4.1) — so no closed list, no warnings.
+values = []
+unknown = "allow"
+
+[links]
+# The OKF cross-link convention: inline markdown links to .md paths,
+# absolute (/tables/x.md) or relative (./y.md, ../z.md). External URLs and
+# non-.md targets are ignored; broken targets are tolerated.
+markdown_paths = true
+
+[[edges]]
+# §5.3: consumers building a graph treat all links as directed edges of an
+# untyped relationship.
+name = "LINKS_TO"
+source = "wikilinks"          # the body-link edge: wikilinks + (with
+                              # [links].markdown_paths) markdown path links
+
+[tags]
+field = "tags"
+inline = false                # OKF has no inline #tag convention
+
+[diagnostics]
+# §9: broken cross-links are not malformed — surface them gently at most.
+broken_link = "warn"
+ambiguous_link = "warn"

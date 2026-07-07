@@ -70,7 +70,7 @@ max_tokens = 2048
 
 # [ingest] — where `cogs ingest` writes and what it stamps. These are the
 # defaults (matching this scaffold); shown for discoverability. Other vault
-# shapes (e.g. OKF — see examples/okf.cogs.toml) override them.
+# shapes (e.g. OKF — see examples/okf-nameless.cogs.toml) override them.
 # [ingest]
 # source_dir = "sources"                 # generated source pages
 # source_kind = "source"                 # kind stamped on them (distill mines this)

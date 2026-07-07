@@ -158,8 +158,10 @@ fully local.
   per-kind required-field diagnostics, embedding settings, and (via
   `[ingest]`) where generated pages go and what they're stamped with. Nothing
   about the vault's shape is hardcoded: `examples/aoa-knowledge.cogs.toml`
-  drives a Karpathy-style research wiki, and `examples/okf.cogs.toml` drives
-  an [Open Knowledge Format](https://github.com/ashtonkj/Nameless.TaskList)
+  drives a Karpathy-style research wiki, `examples/okf-google.cogs.toml` a
+  Google Open Knowledge Format bundle (see below), and
+  `examples/okf-nameless.cogs.toml` an
+  [Open Knowledge Format](https://github.com/ashtonkj/Nameless.TaskList)
   personal task/message vault — same engine, same features, different
   conventions.
 - **One writer, many readers**: the first process to a vault wins a writer
@@ -168,6 +170,23 @@ fully local.
   off an in-memory index, so every process is fully functional.
 - **The DB is a cache**: wipe `.cogs/` any time; a config change triggers an
   automatic rebuild. Gitignore `.cogs/`.
+
+## Open Knowledge Format (OKF)
+
+cogs is a conformant consumer of
+[Google's Open Knowledge Format v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog)
+bundles — drop `examples/okf-google.cogs.toml` into a bundle root as
+`cogs.toml` and the whole engine works over it: every non-reserved `.md`
+(everything except `index.md`/`log.md`) is a concept, OKF's required `type`
+becomes the note kind, `tags`/`timestamp` map onto typed columns, and
+markdown cross-links in both spec forms — bundle-root-absolute
+(`/tables/customers.md`) and relative (`./other.md`, `../x.md`) — become
+untyped `LINKS_TO` edges via `[links] markdown_paths = true` (wikilinks
+still work alongside). Per the spec's tolerance rules, broken links,
+unknown types, and unknown frontmatter keys are all accepted — no edge, no
+error, keys preserved in the note payload. (Distinct from
+`examples/okf-nameless.cogs.toml`, which targets the Nameless.TaskList
+"OKF" — same name, different spec.)
 
 ## Zed setup
 

@@ -1,5 +1,7 @@
-# cogs over an Open Knowledge Format (OKF) vault
+# cogs over a Nameless.TaskList "Open Knowledge Format" (OKF) vault
 # — the spec from https://github.com/ashtonkj/Nameless.TaskList (docs/DESIGN.md).
+# NOT Google's Open Knowledge Format (same name, different spec) — for that
+# one see examples/okf-google.cogs.toml.
 #
 # OKF and cogs share the same core model: files are the database, markdown +
 # YAML frontmatter, wikilinks as the graph, statuses instead of deletion.
