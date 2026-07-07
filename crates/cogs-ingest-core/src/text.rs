@@ -1,7 +1,8 @@
-//! Small text utilities shared by the ingest pipeline and distill mining.
+//! Small text utilities shared by the ingest pipeline, the validators, and
+//! distill mining.
 
 /// Collapse whitespace for formatting-insensitive comparison.
-pub(crate) fn normalize(s: &str) -> String {
+pub fn normalize(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -33,7 +34,7 @@ fn normalized_with_map(s: &str) -> (String, Vec<usize>) {
 /// If `needle` appears in `haystack` up to whitespace differences, return the
 /// exact haystack slice (trimmed) — recovering the verbatim quote even when
 /// a model mangled line breaks.
-pub(crate) fn find_verbatim(haystack: &str, needle: &str) -> Option<String> {
+pub fn find_verbatim(haystack: &str, needle: &str) -> Option<String> {
     let (h_norm, map) = normalized_with_map(haystack);
     let (n_norm, _) = normalized_with_map(needle);
     if n_norm.is_empty() {
@@ -49,7 +50,7 @@ pub(crate) fn find_verbatim(haystack: &str, needle: &str) -> Option<String> {
 }
 
 /// Truncate at a char boundary at or below `cap` bytes.
-pub(crate) fn truncate_chars(s: &str, cap: usize) -> &str {
+pub fn truncate_chars(s: &str, cap: usize) -> &str {
     if s.len() <= cap {
         return s;
     }
@@ -62,7 +63,7 @@ pub(crate) fn truncate_chars(s: &str, cap: usize) -> &str {
 
 /// The text under `## <heading>` (exact match after the `## `), up to the
 /// next `## ` heading or EOF.
-pub(crate) fn section<'a>(body: &'a str, heading: &str) -> Option<&'a str> {
+pub fn section<'a>(body: &'a str, heading: &str) -> Option<&'a str> {
     let needle = format!("## {heading}");
     let mut offset = 0;
     for line in body.split_inclusive('\n') {
@@ -78,7 +79,7 @@ pub(crate) fn section<'a>(body: &'a str, heading: &str) -> Option<&'a str> {
 }
 
 /// Top-level `- ` bullet items of a block of markdown.
-pub(crate) fn bullet_items(text: &str) -> Vec<String> {
+pub fn bullet_items(text: &str) -> Vec<String> {
     text.lines()
         .filter_map(|l| l.strip_prefix("- "))
         .map(|s| s.trim().to_string())

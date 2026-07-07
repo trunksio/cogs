@@ -14,13 +14,12 @@ use tracing::{info, warn};
 use cogs_ask::query::cypher_escape;
 use cogs_core::config::{EdgeConfig, EdgeTarget, Vault};
 use cogs_core::note::ParsedResource;
-use cogs_core::parse::{
-    parse_resource, scan_wikilinks, sha256_hex, split_frontmatter, strip_wikilinks_for_fts,
-};
+use cogs_core::parse::{parse_resource, sha256_hex, split_frontmatter};
 use cogs_core::resolve::{LinkResolver, Resolution};
 use cogs_core::scan::VaultScanner;
 use cogs_graph::embed::EmbeddingProvider;
 use cogs_graph::{GraphDb, SyncEngine};
+use cogs_ingest_core::validators::{self, links_to, sanitize_links};
 use cogs_llm::ChatProvider;
 
 use crate::retrieve::{self, NearDuplicate, NoteMeta};
@@ -35,9 +34,6 @@ use crate::{
 
 /// Bodies longer than this are chunked at `##` boundaries for extraction.
 const CHUNK_CHARS: usize = 28_000;
-const MAX_CLAIMS: usize = 12;
-const MAX_QUOTES: usize = 6;
-const MAX_NEW_PAGES: usize = 6;
 const MAX_CROSS_REFS: usize = 12;
 /// Page body chars shown to the weave/contradiction prompts.
 const PAGE_BODY_CAP: usize = 6_000;
@@ -522,121 +518,24 @@ impl<'a> Ingester<'a> {
         }
     }
 
-    /// Enforce the hard rules on model output. Fails only when unsalvageable
-    /// (no summary / no claims); everything else degrades with a warning.
+    /// Enforce the hard rules on model output — the pure gate lives in
+    /// `cogs_ingest_core::validators`; this wrapper only supplies the world
+    /// (existing slugs from disk, filename-fallback slug) and turns the one
+    /// unsalvageable outcome (no claims survive) into an abort.
     fn validate_extraction(
         &self,
-        mut ex: Extraction,
+        ex: Extraction,
         raw: &ParsedResource,
         prefix: &str,
     ) -> Result<(Extraction, Vec<String>)> {
-        let mut warnings = Vec::new();
-
-        ex.summary = ex.summary.trim().to_string();
-
-        // Claims: single-line, non-trivial, deduped, capped. The length gate
-        // drops structural junk that tolerant parsing can let through
-        // ("text", "quotes:[{", …) — no real claim is under 15 chars.
-        let mut seen = std::collections::HashSet::new();
-        ex.key_claims.retain_mut(|c| {
-            c.text = c.text.split_whitespace().collect::<Vec<_>>().join(" ");
-            if c.text.len() < 15 {
-                if !c.text.is_empty() {
-                    warnings.push(format!("dropped junk claim {:?}", c.text));
-                }
-                return false;
-            }
-            seen.insert(c.text.to_lowercase())
-        });
+        let source_dir = &self.vault.config.ingest.source_dir;
+        let existing = existing_md_stems(&self.vault.root.join(format!("{prefix}{source_dir}")));
+        let fallback = validators::slug_from_filename(&raw.rel_path);
+        let (ex, warnings) =
+            validators::validate_extraction(ex, &raw.body_text, &existing, &fallback);
         if ex.key_claims.is_empty() {
             bail!("extraction produced no key claims — aborting");
         }
-        if ex.key_claims.len() > MAX_CLAIMS {
-            warnings.push(format!(
-                "model produced {} claims; keeping the first {MAX_CLAIMS}",
-                ex.key_claims.len()
-            ));
-            ex.key_claims.truncate(MAX_CLAIMS);
-        }
-
-        // Last resort for a claims-only extraction that survived the content
-        // retry: a summary built from the (validated) claims beats failing
-        // the whole file. Flagged for review.
-        if ex.summary.is_empty() {
-            ex.summary = ex
-                .key_claims
-                .iter()
-                .take(3)
-                .map(|c| c.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            warnings.push(
-                "model never produced a summary — synthesized one from the top claims \
-                 (review it)"
-                    .into(),
-            );
-        }
-
-        // Quotes must be verbatim (whitespace-tolerant) substrings of the raw
-        // body; the recovered raw slice replaces the model's rendition.
-        ex.quotes = ex
-            .quotes
-            .drain(..)
-            .filter_map(|mut q| match find_verbatim(&raw.body_text, &q.text) {
-                Some(exact) => {
-                    q.text = exact;
-                    Some(q)
-                }
-                None => {
-                    warnings.push(format!(
-                        "dropped non-verbatim quote: {:?}",
-                        truncate_chars(&q.text, 80)
-                    ));
-                    None
-                }
-            })
-            .collect();
-        ex.quotes.truncate(MAX_QUOTES);
-
-        // Entities: drop empties (truncation-repair artifacts).
-        ex.entities.retain(|e| !e.name.trim().is_empty());
-
-        // Tags: lowercase tokens.
-        let mut seen_tags = std::collections::HashSet::new();
-        ex.tags.retain_mut(|t| {
-            *t = t.trim().to_lowercase().replace(' ', "-");
-            !t.is_empty() && seen_tags.insert(t.clone())
-        });
-        ex.tags.truncate(6);
-
-        // Slug: well-formed, non-colliding with existing files.
-        let slug_re = regex::Regex::new(r"^[a-z0-9][a-z0-9-]{1,60}$").unwrap();
-        if !slug_re.is_match(&ex.suggested_slug) {
-            let fallback = slug_from_filename(&raw.rel_path);
-            if !ex.suggested_slug.is_empty() {
-                warnings.push(format!(
-                    "model slug {:?} is malformed; using {:?}",
-                    ex.suggested_slug, fallback
-                ));
-            }
-            ex.suggested_slug = fallback;
-        }
-        let source_dir = &self.vault.config.ingest.source_dir;
-        let base = ex.suggested_slug.clone();
-        let mut n = 1;
-        while self
-            .vault
-            .root
-            .join(format!("{prefix}{source_dir}/{}.md", ex.suggested_slug))
-            .exists()
-        {
-            n += 1;
-            ex.suggested_slug = format!("{base}-{n}");
-        }
-        if n > 1 {
-            warnings.push(format!("slug {base:?} taken; using {:?}", ex.suggested_slug));
-        }
-
         Ok((ex, warnings))
     }
 
@@ -710,48 +609,19 @@ impl<'a> Ingester<'a> {
             }
         };
 
-        // ---- validate: new pages -------------------------------------------
-        let slug_re = regex::Regex::new(r"^[a-z0-9][a-z0-9-]{1,60}$").unwrap();
+        // ---- validate: new pages (pure gate; we supply the existing-id set) --
         let kinds = &self.vault.config.kinds.values;
         let new_page_dirs = &self.vault.config.ingest.new_pages;
-        let mut new_pages = Vec::new();
-        let mut seen_new: HashSet<String> = HashSet::new();
-        for mut spec in plan.new_pages {
-            spec.slug = spec.slug.trim().to_lowercase();
-            if !slug_re.is_match(&spec.slug) {
-                warnings.push(format!("dropped new page with malformed slug {:?}", spec.slug));
-                continue;
-            }
-            let Some(dir_kind) = new_page_dirs.get(&spec.dir) else {
-                warnings.push(format!(
-                    "dropped new page {:?}: dir must be one of {:?}, got {:?}",
-                    spec.slug,
-                    new_page_dirs.keys().collect::<Vec<_>>(),
-                    spec.dir
-                ));
-                continue;
-            };
-            let id = format!("{}-{}", spec.dir, spec.slug);
-            if !seen_new.insert(id.clone()) {
-                continue; // model proposed the same page twice in one plan
-            }
-            if by_id.contains_key(id.as_str())
-                || self.vault.root.join(format!("{prefix}{}/{}.md", spec.dir, spec.slug)).exists()
-            {
-                warnings.push(format!("proposed new page {id} already exists — not recreating"));
-                continue;
-            }
-            if spec.kind.is_empty() || (!kinds.is_empty() && !kinds.contains(&spec.kind)) {
-                spec.kind = dir_kind.clone();
-            }
-            if spec.title.trim().is_empty() {
-                spec.title = spec.slug.replace('-', " ");
-            }
-            new_pages.push(spec);
-            if new_pages.len() >= MAX_NEW_PAGES {
-                break;
+        let mut existing_ids: HashSet<String> = by_id.keys().map(|k| k.to_string()).collect();
+        for spec in &plan.new_pages {
+            let slug = spec.slug.trim().to_lowercase();
+            if self.vault.root.join(format!("{prefix}{}/{slug}.md", spec.dir)).exists() {
+                existing_ids.insert(format!("{}-{slug}", spec.dir));
             }
         }
+        let (new_pages, page_warnings) =
+            validators::validate_new_pages(plan.new_pages, new_page_dirs, kinds, &existing_ids);
+        warnings.extend(page_warnings);
 
         // Resolver over existing notes + proposed pages + the source page, so
         // link validation accepts exactly what will exist after this ingest.
@@ -763,28 +633,14 @@ impl<'a> Ingester<'a> {
         pairs.push((source_id.clone(), source_slug.clone()));
         let resolver = LinkResolver::new(pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())));
 
-        // ---- validate: linked claims (verbatim apart from brackets) --------
-        let mut linked = plan.linked_claims;
-        if linked.len() != plain_claims.len() {
-            warnings.push(format!(
-                "weave returned {} claims for {} inputs; keeping the originals unlinked",
-                linked.len(),
-                plain_claims.len()
-            ));
-            linked = plain_claims.clone();
-        }
-        for (i, lc) in linked.iter_mut().enumerate() {
-            let cleaned = sanitize_links(lc, &resolver, &source_dir, warnings);
-            if normalize(&strip_wikilinks_for_fts(&cleaned)) != normalize(&plain_claims[i]) {
-                warnings.push(format!(
-                    "weave rewrote claim {} — keeping the original text",
-                    i + 1
-                ));
-                *lc = plain_claims[i].clone();
-            } else {
-                *lc = cleaned;
-            }
-        }
+        // ---- validate: linked claims (pure gate: verbatim apart from brackets)
+        let (linked, claim_warnings) = validators::validate_linked_claims(
+            plan.linked_claims,
+            &plain_claims,
+            &resolver,
+            &source_dir,
+        );
+        warnings.extend(claim_warnings);
         for (c, l) in ex.key_claims.iter_mut().zip(&linked) {
             c.text = l.clone();
         }
@@ -1083,39 +939,9 @@ impl<'a> Ingester<'a> {
     }
 }
 
-// ---- weave helpers (pure, unit-tested) --------------------------------------
-
-/// Unwrap every wikilink in `text` whose target does not resolve — replaced
-/// by its alias (or the target's display text) — so a hallucinated target can
-/// never reach the vault as a broken link.
-fn sanitize_links(
-    text: &str,
-    resolver: &LinkResolver,
-    source_dir: &str,
-    warnings: &mut Vec<String>,
-) -> String {
-    let mut out = text.to_string();
-    let links = scan_wikilinks(text, 0);
-    for link in links.iter().rev() {
-        if matches!(resolver.resolve(&link.target, source_dir), Resolution::Resolved(_)) {
-            continue;
-        }
-        let display = link
-            .alias
-            .clone()
-            .unwrap_or_else(|| link.target.rsplit('/').next().unwrap_or("").to_string());
-        warnings.push(format!("unwrapped unresolvable link [[{}]]", link.target));
-        out.replace_range(link.span.clone(), &display);
-    }
-    out
-}
-
-/// Does any wikilink in `text` resolve to `id`?
-fn links_to(text: &str, resolver: &LinkResolver, source_dir: &str, id: &str) -> bool {
-    scan_wikilinks(text, 0)
-        .iter()
-        .any(|l| resolver.resolve(&l.target, source_dir).id() == Some(id))
-}
+// ---- weave helpers -----------------------------------------------------------
+// (sanitize_links / links_to live in cogs_ingest_core::validators — the same
+// code gates browser ingest.)
 
 /// Demote any markdown headings the model emitted inside a section body —
 /// the pipeline owns section headings.
@@ -1287,30 +1113,18 @@ fn rust_merge(parts: Vec<Extraction>) -> Extraction {
     out
 }
 
-/// Fallback slug from the raw filename: strip the date prefix and extension,
-/// squash anything non-slug.
-fn slug_from_filename(rel_path: &str) -> String {
-    let stem = rel_path
-        .rsplit('/')
-        .next()
-        .unwrap_or(rel_path)
-        .trim_end_matches(".md");
-    let date_re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}-").unwrap();
-    let stem = date_re.replace(stem, "");
-    let mut slug: String = stem
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    while slug.contains("--") {
-        slug = slug.replace("--", "-");
+/// File stems of `*.md` directly under `dir` — the slug-collision set the
+/// pure validator checks against (the browser builds its own from its index).
+fn existing_md_stems(dir: &Path) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            if let Some(stem) = e.file_name().to_string_lossy().strip_suffix(".md") {
+                out.insert(stem.to_string());
+            }
+        }
     }
-    let slug = slug.trim_matches('-').to_string();
-    if slug.len() < 2 {
-        "capture".into()
-    } else {
-        slug
-    }
+    out
 }
 
 #[cfg(test)]
@@ -1373,12 +1187,4 @@ mod tests {
         assert_eq!(m.suggested_slug, "slug-a");
     }
 
-    #[test]
-    fn slug_fallback_strips_date_and_ext() {
-        assert_eq!(
-            slug_from_filename("raw/clips/2026-07-03-Some Article!.md"),
-            "some-article"
-        );
-        assert_eq!(slug_from_filename("raw/x.md"), "capture");
-    }
 }

@@ -326,6 +326,78 @@ fn slug_collision_gets_suffixed() {
     assert!(tmp.path().join("wiki/sources/mcp-registry-announcement-2.md").exists());
 }
 
+/// Golden fixture: a reply with a fabricated quote, a junk claim, and a
+/// malformed slug must be repaired identically by the full native pipeline
+/// (which delegates to cogs-ingest-core) and by the pure validator called
+/// directly — the parity guarantee browser ingest (cogs-wasm) relies on.
+#[test]
+fn golden_extraction_native_and_pure_validation_agree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (vault, db) = setup(tmp.path());
+    let raw = add_capture(tmp.path());
+
+    let reply = serde_json::json!({
+        "summary": "Anthropic launched a registry for MCP servers.",
+        "key_claims": [
+            {"text": "Anthropic announced a   registry\nfor MCP servers.", "entities": ["Anthropic"]},
+            {"text": "junk", "entities": []},
+            {"text": "The registry verifies publisher identity before listing.", "entities": []}
+        ],
+        "quotes": [
+            {"text": "verifies publisher identity", "location": "para 2"},
+            {"text": "this quote is entirely fabricated", "location": "para 9"}
+        ],
+        "entities": [{"name": "MCP registry", "kind": "entity", "blurb": ""}],
+        "topics": [],
+        "suggested_slug": "Bad Slug!!",
+        "tags": ["MCP"],
+        "author": null,
+        "publisher": null
+    })
+    .to_string();
+
+    // ---- native path: full ingest -----------------------------------------
+    let chat = ScriptedChat::routed(&[&reply], &[passthrough_links()], &[], &[]);
+    let report = Ingester::new(&vault, &db, &chat, None, opts()).ingest(Path::new(raw)).unwrap();
+    // malformed slug fell back to the filename-derived slug
+    assert_eq!(report.source_page.as_deref(), Some("wiki/sources/mcp-registry.md"));
+    let page = std::fs::read_to_string(tmp.path().join("wiki/sources/mcp-registry.md")).unwrap();
+
+    // ---- pure module: same inputs, no filesystem/graph ----------------------
+    let raw_text = std::fs::read_to_string(tmp.path().join(raw)).unwrap();
+    let parsed = cogs_core::parse::parse_resource(raw, &raw_text, true, &vault.config);
+    let ex: cogs_ingest::Extraction = cogs_llm::parse_json_reply(&reply).unwrap();
+    let existing = std::collections::HashSet::from(["old-article".to_string()]);
+    let (ex, warnings) = cogs_ingest::validators::validate_extraction(
+        ex,
+        &parsed.body_text,
+        &existing,
+        &cogs_ingest::validators::slug_from_filename(raw),
+    );
+
+    // Identical decisions: slug, cleaned claims, surviving quotes, tags.
+    assert_eq!(ex.suggested_slug, "mcp-registry");
+    let texts: Vec<&str> = ex.key_claims.iter().map(|c| c.text.as_str()).collect();
+    assert_eq!(texts, vec![CLAIM_1, CLAIM_2]);
+    for t in &texts {
+        assert!(page.contains(&format!("- {t}\n")), "claim {t:?} missing from page:\n{page}");
+    }
+    assert!(!page.contains("junk"));
+    assert_eq!(ex.quotes.len(), 1);
+    assert!(page.contains(&format!("> \"{}\" — para 2", ex.quotes[0].text)));
+    assert!(!page.contains("fabricated"));
+    assert_eq!(ex.tags, vec!["mcp"]);
+    assert!(page.contains("tags: [mcp]"));
+
+    // Every warning the pure gate raises appears verbatim in the native report.
+    assert!(warnings.iter().any(|w| w.contains("dropped junk claim")));
+    assert!(warnings.iter().any(|w| w.contains("non-verbatim quote")));
+    assert!(warnings.iter().any(|w| w.contains("is malformed")));
+    for w in &warnings {
+        assert!(report.warnings.contains(w), "native report missing pure warning {w:?}");
+    }
+}
+
 #[test]
 fn unparseable_reply_retries_once_then_succeeds() {
     let tmp = tempfile::tempdir().unwrap();

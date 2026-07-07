@@ -502,6 +502,7 @@ dependencies = [
  "cogs-ask",
  "cogs-core",
  "cogs-graph",
+ "cogs-ingest-core",
  "cogs-llm",
  "regex",
  "serde",
@@ -512,12 +513,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cogs-ingest-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cogs-core",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cogs-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
  "cogs-core",
+ "cogs-ingest-core",
  "reqwest",
  "serde",
  "serde_json",
@@ -579,6 +592,7 @@ dependencies = [
  "chrono",
  "cogs-core",
  "cogs-graph",
+ "cogs-ingest-core",
  "serde",
  "serde_json",
  "tempfile",

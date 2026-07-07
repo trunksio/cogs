@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::{extract_json, repair_truncated_json, ChatProvider, CompletionParams, Message};
+use crate::{parse_json_reply, ChatProvider, CompletionParams, Message};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -182,28 +182,9 @@ impl<'a> Teacher<'a> {
         let mut msgs: Vec<Message> = messages.to_vec();
         for attempt in 0..2 {
             let raw = self.chat.complete(&msgs, &params)?;
-            // Balanced JSON if present; else salvage a max_tokens truncation.
-            let candidate: Option<String> = extract_json(&raw)
-                .map(str::to_string)
-                .or_else(|| repair_truncated_json(&raw));
-            let parsed: Result<T> = candidate
-                .context("no JSON object/array in model reply")
-                .and_then(|s| {
-                    serde_json::from_str(&s)
-                        .or_else(|e| {
-                            // Models sometimes wrap the object in a
-                            // one-element array: [{...}] — unwrap and retry.
-                            match serde_json::from_str::<serde_json::Value>(&s) {
-                                Ok(serde_json::Value::Array(a))
-                                    if a.len() == 1 && a[0].is_object() =>
-                                {
-                                    serde_json::from_value(a.into_iter().next().unwrap())
-                                }
-                                _ => Err(e),
-                            }
-                        })
-                        .context("model reply was not the expected JSON shape")
-                });
+            // The shared tolerant ladder (cogs-ingest-core): balanced JSON if
+            // present, else truncation salvage, then typed parse.
+            let parsed: Result<T> = parse_json_reply(&raw);
             let seq = match &self.recorder {
                 Some(r) => r.record(task, &meta, &msgs, &raw, parsed.is_ok())?,
                 None => 0,

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/cogs-core", "crates/cogs-graph", "crates/cogs-runtime", "crates/cogs-lsp", "crates/cogs-server", "crates/cogs-llm", "crates/cogs-ask", "crates/cogs-ingest", "crates/cogs-wasm"]
+members = ["crates/cogs-core", "crates/cogs-graph", "crates/cogs-runtime", "crates/cogs-lsp", "crates/cogs-server", "crates/cogs-llm", "crates/cogs-ask", "crates/cogs-ingest", "crates/cogs-ingest-core", "crates/cogs-wasm"]
 exclude = ["zed-extension"]
 resolver = "2"
 

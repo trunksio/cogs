@@ -1,0 +1,13 @@
+[package]
+name = "cogs-ingest-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure core of cogs ingest: typed model outputs (tolerant deserialization), JSON reply repair, and the hard validators — wasm32-safe, shared by native ingest and the browser"
+
+[dependencies]
+cogs-core = { path = "../cogs-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
