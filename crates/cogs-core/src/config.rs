@@ -20,6 +20,7 @@ pub struct VaultConfig {
     pub kinds: KindsSection,
     #[serde(rename = "edges")]
     pub edges: Vec<EdgeConfig>,
+    pub links: LinksSection,
     pub tags: TagsSection,
     pub diagnostics: DiagnosticsSection,
     pub embeddings: EmbeddingsSection,
@@ -172,6 +173,20 @@ pub enum EdgeTarget {
     #[default]
     Note,
     Resource,
+}
+
+/// Which body syntaxes produce links. Wikilinks are always scanned (the cogs
+/// default convention); markdown path links are the Google Open Knowledge
+/// Format's cross-link form and are opt-in. Both can coexist — they feed the
+/// same link list and the same wikilink-source edge.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct LinksSection {
+    /// Also extract inline markdown links whose target is a `.md` path —
+    /// bundle-root-absolute (`/tables/customers.md`) or relative
+    /// (`./other.md`, `../x.md`) — per OKF v0.1 §5. External URLs, anchors,
+    /// and non-.md targets are ignored; broken targets are tolerated.
+    pub markdown_paths: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -425,6 +440,7 @@ impl Default for VaultConfig {
                 field: None,
                 target: EdgeTarget::Note,
             }],
+            links: LinksSection::default(),
             tags: TagsSection::default(),
             diagnostics: DiagnosticsSection::default(),
             embeddings: EmbeddingsSection::default(),
@@ -634,6 +650,20 @@ mod tests {
         assert_eq!(cfg.wikilink_edge().unwrap().name, "CITES");
         assert_eq!(cfg.frontmatter_edges().count(), 2);
         assert_eq!(cfg.vault.id_strip_prefix, "wiki/");
+    }
+
+    #[test]
+    fn markdown_path_links_off_by_default_and_parseable() {
+        assert!(!VaultConfig::default().links.markdown_paths);
+        let cfg: VaultConfig = toml::from_str(
+            r#"
+            [links]
+            markdown_paths = true
+            "#,
+        )
+        .unwrap();
+        cfg.validate().unwrap();
+        assert!(cfg.links.markdown_paths);
     }
 
     #[test]

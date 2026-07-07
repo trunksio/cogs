@@ -25,6 +25,17 @@ static WIKILINK_FULL_RE: LazyLock<Regex> =
 static INLINE_TAG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(^|[\s(])#([A-Za-z][\w/-]*)").unwrap());
 
+/// Inline markdown link `[text](dest)` (group 1 = optional image `!`, 2 =
+/// text, 3 = raw destination incl. optional `"title"`). Feeds the OKF-style
+/// path-link scan; the destination grammar is deliberately simple (no
+/// parens/newlines) — OKF cross-links are plain `.md` paths.
+static MD_LINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(!?)\[([^\]\n]*)\]\(([^()\n]+)\)").unwrap());
+
+/// Any URI scheme prefix (`http:`, `https:`, `mailto:`, …).
+static SCHEME_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:").unwrap());
+
 pub fn sha256_hex(s: &str) -> String {
     let mut h = Sha256::new();
     h.update(s.as_bytes());
@@ -123,6 +134,96 @@ pub fn scan_wikilinks(body: &str, body_offset: usize) -> Vec<Link> {
             }
         })
         .collect()
+}
+
+/// Collapse `.`/`..` segments in a bundle-root-relative path. None when `..`
+/// climbs above the root (an escaping link can never resolve — tolerated).
+fn normalize_path(path: &str) -> Option<String> {
+    let mut out: Vec<&str> = Vec::new();
+    for comp in path.split('/') {
+        match comp {
+            "" | "." => {}
+            ".." => {
+                out.pop()?;
+            }
+            c => out.push(c),
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.join("/"))
+    }
+}
+
+/// Scan inline markdown links whose destination is a `.md` path — the Google
+/// Open Knowledge Format cross-link convention (OKF v0.1 §5). Two forms:
+/// bundle-root-absolute (`/tables/customers.md`) and relative to the linking
+/// file's directory (`./other.md`, `../x.md`). External URLs (any scheme),
+/// anchor-only, image, and non-`.md` destinations are ignored. The emitted
+/// target is the path-form the resolver already handles: vault-relative path
+/// minus the configured id prefix and `.md` ('/'→'-' + lowercase happen in
+/// LinkResolver). A target with no matching note resolves Broken downstream —
+/// tolerated, no edge, per spec.
+///
+/// Unlike wikilinks (kept when masked, for sync_graph.py parity), markdown
+/// links inside fenced/inline code are skipped entirely — OKF bodies are
+/// dense with SQL/code blocks and in-code paths are not assertions.
+pub fn scan_markdown_path_links(
+    body: &str,
+    body_offset: usize,
+    rel_path: &str,
+    strip_prefix: &str,
+) -> Vec<Link> {
+    let mask = code_mask_ranges(body);
+    let src_dir = rel_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    let mut links = Vec::new();
+    for c in MD_LINK_RE.captures_iter(body) {
+        let m = c.get(0).unwrap();
+        if !c[1].is_empty() || in_ranges(m.start(), &mask) {
+            continue; // image, or inside code
+        }
+        let dest_group = c.get(3).unwrap();
+        // The destination is the first whitespace-separated token; the rest
+        // is an optional markdown `"title"`.
+        let Some(dest) = dest_group.as_str().split_whitespace().next() else {
+            continue;
+        };
+        if dest.starts_with('#') || SCHEME_RE.is_match(dest) {
+            continue; // anchor-only, or external (http(s):, mailto:, …)
+        }
+        let (path, anchor) = match dest.split_once('#') {
+            Some((p, a)) => (p, Some(a)),
+            None => (dest, None),
+        };
+        if !path.ends_with(".md") {
+            continue;
+        }
+        // Bundle-root-absolute vs relative to the linking file's directory.
+        let joined = match path.strip_prefix('/') {
+            Some(abs) => abs.to_string(),
+            None if src_dir.is_empty() => path.to_string(),
+            None => format!("{src_dir}/{path}"),
+        };
+        let Some(vault_rel) = normalize_path(&joined) else {
+            continue; // `..` escaped the vault root — tolerated, no edge
+        };
+        let stripped = vault_rel.strip_prefix(strip_prefix).unwrap_or(&vault_rel);
+        let Some(target) = stripped.strip_suffix(".md").filter(|t| !t.is_empty()) else {
+            continue;
+        };
+        let dest_off = dest_group.as_str().find(dest).unwrap_or(0);
+        let ts_start = body_offset + dest_group.start() + dest_off;
+        links.push(Link {
+            target: target.to_string(),
+            anchor: anchor.map(|a| a.trim().to_string()).filter(|a| !a.is_empty()),
+            alias: Some(c[2].trim().to_string()).filter(|a| !a.is_empty()),
+            span: body_offset + m.start()..body_offset + m.end(),
+            target_span: ts_start..ts_start + path.len(),
+            masked: false,
+        });
+    }
+    links
 }
 
 /// Replace `[[target|alias]]` with alias, `[[target]]`/`[[target#a]]` with the
@@ -233,7 +334,15 @@ pub fn parse_note(rel_path: &str, text: &str, cfg: &VaultConfig) -> ParsedNote {
     let updated = get(&fields.updated).and_then(|v| parse_date_lenient(v));
 
     let mut tags = yaml_str_list(get(&cfg.tags.field));
-    let links = scan_wikilinks(body, body_offset);
+    let mut links = scan_wikilinks(body, body_offset);
+    if cfg.links.markdown_paths {
+        links.extend(scan_markdown_path_links(
+            body,
+            body_offset,
+            rel_path,
+            &cfg.vault.id_strip_prefix,
+        ));
+    }
     if cfg.tags.inline {
         let mask = code_mask_ranges(body);
         for c in INLINE_TAG_RE.captures_iter(body) {
@@ -452,6 +561,97 @@ mod tests {
         assert!(n.tags.contains(&"rust".to_string()));
         assert!(n.tags.contains(&"graph-db".to_string()));
         assert!(!n.tags.iter().any(|t| t == "frag"));
+    }
+
+    fn md_cfg() -> VaultConfig {
+        let mut c = cfg();
+        c.links.markdown_paths = true;
+        c
+    }
+
+    #[test]
+    fn markdown_path_links_off_by_default() {
+        let n = parse_note("a.md", "See [customers](/tables/customers.md).", &cfg());
+        assert!(n.links.is_empty());
+    }
+
+    #[test]
+    fn markdown_link_both_forms() {
+        // Absolute = bundle-root-relative; relative = against the file's dir.
+        let text = "See [customers](/tables/customers.md) and [peer](./other.md) and [bare](sibling.md).";
+        let n = parse_note("tables/orders.md", text, &md_cfg());
+        let targets: Vec<&str> = n.links.iter().map(|l| l.target.as_str()).collect();
+        assert_eq!(targets, vec!["tables/customers", "tables/other", "tables/sibling"]);
+        // Alias carries the link text; spans point at the destination path.
+        assert_eq!(n.links[0].alias.as_deref(), Some("customers"));
+        assert_eq!(&text[n.links[0].target_span.clone()], "/tables/customers.md");
+    }
+
+    #[test]
+    fn markdown_link_dotdot_traversal() {
+        let n = parse_note(
+            "tables/orders.md",
+            "See [metric](../references/metrics/event_count.md) and [escape](../../nope.md).",
+            &md_cfg(),
+        );
+        // `..` normalizes within the bundle; escaping the root is dropped.
+        assert_eq!(n.links.len(), 1);
+        assert_eq!(n.links[0].target, "references/metrics/event_count");
+    }
+
+    #[test]
+    fn markdown_link_in_code_is_not_extracted() {
+        // Unlike wikilinks (masked but kept), in-code markdown links are
+        // skipped entirely — they must never become edges.
+        let text = "real [a](/a.md)\n\n```\nfake [b](/b.md)\n```\nand `[c](/c.md)` inline";
+        let n = parse_note("top.md", text, &md_cfg());
+        assert_eq!(n.links.len(), 1);
+        assert_eq!(n.links[0].target, "a");
+    }
+
+    #[test]
+    fn markdown_non_md_and_external_ignored() {
+        let text = "[ext](https://example.com/x.md) [mail](mailto:a@b.c) \
+                    [anchor](#section) [img alt](pic.png) ![shot](diagram.md) \
+                    [dash](https://example.com/dash)";
+        let n = parse_note("top.md", text, &md_cfg());
+        assert!(n.links.is_empty(), "{:?}", n.links);
+    }
+
+    #[test]
+    fn markdown_link_anchor_and_title() {
+        let n = parse_note(
+            "guides/setup.md",
+            "See [schema](/tables/orders.md#schema) and [titled](./x.md \"a title\").",
+            &md_cfg(),
+        );
+        assert_eq!(n.links[0].target, "tables/orders");
+        assert_eq!(n.links[0].anchor.as_deref(), Some("schema"));
+        assert_eq!(n.links[1].target, "guides/x");
+    }
+
+    #[test]
+    fn markdown_link_strips_id_prefix() {
+        let mut c = md_cfg();
+        c.vault.id_strip_prefix = "wiki/".into();
+        let n = parse_note("wiki/tables/orders.md", "[c](/wiki/tables/customers.md) [r](./peer.md)", &c);
+        let targets: Vec<&str> = n.links.iter().map(|l| l.target.as_str()).collect();
+        // Both land in id space (prefix stripped), like wikilink path targets.
+        assert_eq!(targets, vec!["tables/customers", "tables/peer"]);
+    }
+
+    #[test]
+    fn markdown_links_coexist_with_wikilinks() {
+        let n = parse_note(
+            "tables/orders.md",
+            "Wiki [[tables/customers]] and md [sales](/datasets/sales.md).",
+            &md_cfg(),
+        );
+        let targets: Vec<&str> = n.links.iter().map(|l| l.target.as_str()).collect();
+        assert_eq!(targets, vec!["tables/customers", "datasets/sales"]);
+        // Broken-by-content is a resolution concern, not a parse error: a
+        // target for a file that doesn't exist still parses fine.
+        assert!(n.links.iter().all(|l| !l.masked));
     }
 
     #[test]

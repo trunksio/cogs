@@ -380,6 +380,61 @@ inline = false
     }
 
     #[test]
+    fn markdown_path_link_edges_appear_in_snapshot_when_enabled() {
+        // Google OKF-style config: [links] markdown_paths feeds the same
+        // wikilink-source edge, so the browser engine's graph_snapshot must
+        // show markdown-link edges without any wasm-specific code.
+        const OKF_CFG: &str = r#"
+[notes.fields]
+kind = "type"
+updated = "timestamp"
+[links]
+markdown_paths = true
+[tags]
+inline = false
+"#;
+        let mut e = Engine::new(OKF_CFG).unwrap();
+        e.upsert(
+            "tables/orders.md",
+            "---\ntype: BigQuery Table\ntitle: Orders\n---\nJoins [customers](/tables/customers.md); \
+             see the [sales dataset](../datasets/sales.md) and [[datasets/sales]] again.\n\
+             Broken: [churn](/models/churn.md). In code: `[x](/tables/customers.md)`.\n",
+        );
+        e.upsert(
+            "tables/customers.md",
+            "---\ntype: BigQuery Table\ntitle: Customers\n---\nOne row per customer.\n",
+        );
+        e.upsert(
+            "datasets/sales.md",
+            "---\ntype: BigQuery Dataset\ntitle: Sales\n---\nContains [orders](./../tables/orders.md).\n",
+        );
+        e.rebuild_derived();
+
+        let g = e.graph_snapshot(false);
+        let edges: Vec<(String, String)> = g["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (e["source"].as_str().unwrap().to_string(), e["target"].as_str().unwrap().to_string())
+            })
+            .collect();
+        // orders → customers (absolute), orders → sales (relative ../,
+        // deduped with the equivalent wikilink), sales → orders (relative);
+        // broken + in-code links produce nothing.
+        assert_eq!(
+            edges,
+            vec![
+                ("datasets-sales".into(), "tables-orders".into()),
+                ("tables-orders".into(), "datasets-sales".into()),
+                ("tables-orders".into(), "tables-customers".into()),
+            ],
+            "{edges:?}"
+        );
+        assert!(g["edges"].as_array().unwrap().iter().all(|e| e["type"] == "LINKS_TO"));
+    }
+
+    #[test]
     fn expand_and_health() {
         let e = engine();
         let ex = e.expand(&["concepts-a".into()], 1);
